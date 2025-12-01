@@ -16,8 +16,13 @@ jobs:
         ports:
           - 1433:1433
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
       - name: Wait for MSSQL
         run: |
           for i in {1..30}; do
@@ -29,3 +34,14 @@ jobs:
         run: |
           cargo test
           cargo test -- --ignored
+        
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Prepare coverage directory
+        run: mkdir -p coverage
+      - name: Generate coverage report (Cobertura)
+        run: cargo llvm-cov --all-features --workspace --cobertura --output-path coverage/cobertura.xml
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
