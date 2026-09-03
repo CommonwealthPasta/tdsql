@@ -275,13 +275,13 @@ specific type may reject it. Bind a typed `Option<T>` when that matters.
 
 ## Examples
 
-Runnable examples live in [`examples/`](examples). The
-[`tests`](tests) directory holds integration tests that exercise the full type
+Runnable examples live in [`examples/`](https://github.com/CommonwealthPasta/tdsql/tree/master/examples). The
+[`tests`](https://github.com/CommonwealthPasta/tdsql/tree/master/tests) directory holds integration tests that exercise the full type
 mapping against a live server.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/CommonwealthPasta/tdsql/tree/master/LICENSE).
 
 [`Error`]: https://docs.rs/tdsql/latest/tdsql/enum.Error.html
 [`Config::from_jdbc_string`]: https://docs.rs/tdsql/latest/tdsql/struct.Config.html#method.from_jdbc_string

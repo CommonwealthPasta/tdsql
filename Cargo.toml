@@ -1,15 +1,15 @@
 [package]
 name = "tdsql"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.88"
-authors = ["Luis Carlos Carrillo T (Luigimonsoft)"]
+authors = ["CommonwealthPasta"]
 description = "Ergonomic async Microsoft SQL Server client for Rust, with typed rows and multi-result-set support"
 license = "MIT"
 readme = "README.md"
 keywords = ["sqlserver", "mssql", "database", "tds", "async"]
 categories = ["database", "asynchronous"]
-repository = "https://github.com/Luigimonsoft/tdsql"
+repository = "https://github.com/CommonwealthPasta/tdsql"
 
 [dependencies]
 tiberius = { package = "tiberius-ng", version = "0.13.1", default-features = false, features = ["native-tls", "tds73", "tds80", "chrono", "rust_decimal"] }
