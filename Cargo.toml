@@ -1,26 +1,25 @@
 [package]
-name = "mssqlrust"
+name = "tdsql"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 authors = ["Luis Carlos Carrillo T (Luigimonsoft)"]
-description = "Lightweight Rust library for Microsoft SQL Server using dataset and datatable"
+description = "Ergonomic async Microsoft SQL Server client for Rust, with typed rows and multi-result-set support"
 license = "MIT"
 readme = "README.md"
-keywords = ["sqlserver", "mssql", "database","dataset","datatable"]
+keywords = ["sqlserver", "mssql", "database", "tds", "async"]
 categories = ["database", "asynchronous"]
-repository = "https://github.com/Luigimonsoft/mssqlrust"
+repository = "https://github.com/Luigimonsoft/tdsql"
 
 [dependencies]
-anyhow = "1"
-thiserror = "2.0.16"
-futures = "0.3"
-chrono = { version = "0.4.41", features = ["clock"] }
-base64 = "0.22"
-tiberius = { version = "0.12.3", default-features = false, features = ["native-tls", "tds73", "chrono", "rust_decimal"] }
-tokio-util = { version = "0.7", features = ["compat"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
-async-trait = "0.1"
-uuid = "1"
-rust_decimal = "1"
+tiberius = { package = "tiberius-ng", version = "0.13.1", default-features = false, features = ["native-tls", "tds73", "tds80", "chrono", "rust_decimal"] }
+thiserror = "2.0.20"
+futures = "0.3.34"
+chrono = { version = "0.4.45", features = ["clock"] }
+tokio-util = { version = "0.7.19", features = ["compat"] }
+tokio = { version = "1.53", features = ["net", "time"] }
+uuid = "1.26"
+rust_decimal = "1.43"
 
 [dev-dependencies]
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread"] }
