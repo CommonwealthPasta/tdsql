@@ -281,7 +281,7 @@ mapping against a live server.
 
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE).
 
 [`Error`]: https://docs.rs/tdsql/latest/tdsql/enum.Error.html
 [`Config::from_jdbc_string`]: https://docs.rs/tdsql/latest/tdsql/struct.Config.html#method.from_jdbc_string
