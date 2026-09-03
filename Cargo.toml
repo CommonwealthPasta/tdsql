@@ -11,15 +11,28 @@ keywords = ["sqlserver", "mssql", "database", "tds", "async"]
 categories = ["database", "asynchronous"]
 repository = "https://github.com/CommonwealthPasta/tdsql"
 
+[features]
+default = []
+# A synchronous client that owns its own runtime; see the `blocking` module.
+blocking = ["tokio/rt-multi-thread"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 tiberius = { package = "tiberius-ng", version = "0.13.1", default-features = false, features = ["native-tls", "tds73", "tds80", "chrono", "rust_decimal"] }
 thiserror = "2.0.20"
 futures = "0.3.34"
 chrono = { version = "0.4.45", features = ["clock"] }
 tokio-util = { version = "0.7.19", features = ["compat"] }
-tokio = { version = "1.53", features = ["net", "time"] }
+tokio = { version = "1.53", features = ["net", "time", "rt", "sync"] }
 uuid = "1.26"
 rust_decimal = "1.43"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["macros", "rt-multi-thread"] }
+
+[[example]]
+name = "blocking"
+required-features = ["blocking"]

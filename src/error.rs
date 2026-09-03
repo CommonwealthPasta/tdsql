@@ -69,6 +69,28 @@ pub enum Error {
     /// The connection configuration was invalid.
     #[error("invalid configuration: {0}")]
     Config(String),
+
+    /// The connection task has shut down, so no further statements can run.
+    ///
+    /// This means the connection was closed, or it failed in a way that ended
+    /// the background task driving it.
+    #[error("connection is closed")]
+    ConnectionClosed,
+
+    /// A blocking client was created from inside an async runtime.
+    ///
+    /// The blocking client owns a runtime, and driving one runtime from inside
+    /// another panics. Use [`Client`](crate::Client) directly in async code.
+    #[error("the blocking client cannot be used from inside an async runtime")]
+    BlockingInAsync,
+
+    /// A savepoint name was not a plain SQL identifier.
+    ///
+    /// Savepoint names are interpolated into `ROLLBACK TRANSACTION <name>`, so
+    /// they are restricted to letters, digits and underscores, starting with a
+    /// letter or underscore, at most 32 characters.
+    #[error("invalid savepoint name: {0:?}")]
+    InvalidSavepointName(String),
 }
 
 impl From<tiberius::error::Error> for Error {

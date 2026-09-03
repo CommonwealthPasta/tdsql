@@ -183,6 +183,87 @@ let cmd = Command::query("UPDATE users SET note = @note WHERE id = @id")
     .param("id", 7);
 ```
 
+## Transactions
+
+`client.transaction()` returns a handle that scopes every statement run through
+it. Commit to keep the work; **dropping without committing rolls back.**
+
+```rust,no_run
+# use tdsql::Client;
+# async fn f(client: &mut Client) -> tdsql::Result<()> {
+let mut tx = client.transaction().await?;
+
+tx.execute("INSERT INTO orders (id) VALUES (@P1)", &[&1i32]).await?;
+tx.execute("UPDATE stock SET qty = qty - 1 WHERE id = @P1", &[&7i32]).await?;
+
+tx.commit().await?;   // or tx.rollback().await?
+# Ok(())
+# }
+```
+
+A transaction never commits implicitly, so an early `?` return is safe — the
+insert below is discarded, not half-applied:
+
+```rust,no_run
+# use tdsql::Client;
+async fn transfer(client: &mut Client) -> tdsql::Result<()> {
+    let mut tx = client.transaction().await?;
+    tx.execute("INSERT INTO orders (id) VALUES (@P1)", &[&1i32]).await?;
+    tx.execute("INSERT INTO nonexistent VALUES (1)", &[]).await?;  // fails
+    tx.commit().await
+}
+```
+
+A `&mut Transaction` can be passed around, so one unit of work can span several
+functions:
+
+```rust,no_run
+use tdsql::{Client, Transaction};
+
+async fn add_order(tx: &mut Transaction<'_>, id: i32) -> tdsql::Result<()> {
+    tx.execute("INSERT INTO orders (id) VALUES (@P1)", &[&id]).await?;
+    Ok(())
+}
+
+# async fn f(client: &mut Client) -> tdsql::Result<()> {
+let mut tx = client.transaction().await?;
+add_order(&mut tx, 1).await?;
+add_order(&mut tx, 2).await?;
+tx.commit().await?;
+# Ok(())
+# }
+```
+
+Isolation levels and savepoints are both available. A savepoint is a nested
+transaction: rolling it back undoes only its own work and leaves the outer
+transaction open.
+
+```rust,no_run
+# use tdsql::{Client, IsolationLevel};
+# async fn f(client: &mut Client) -> tdsql::Result<()> {
+let mut tx = client
+    .transaction_with_isolation(IsolationLevel::Serializable)
+    .await?;
+
+{
+    let mut sp = tx.savepoint("before_risky").await?;
+    sp.execute("DELETE FROM audit WHERE id = @P1", &[&5i32]).await?;
+    sp.rollback().await?;      // undone; `tx` is still live
+}
+
+tx.commit().await?;
+# Ok(())
+# }
+```
+
+### How rollback-on-drop works
+
+`Drop` cannot run `async` code, so the rollback is *enqueued* rather than
+awaited — the send is synchronous and non-blocking. The connection lives in a
+background task that serves requests in order, so the rollback is guaranteed to
+reach the server before any later statement on that connection. Use
+`rollback()` explicitly when you want to observe an error from it.
+
 ## DDL and raw batches
 
 Parameterised statements are sent as an RPC, and some statements — `CREATE
@@ -244,6 +325,49 @@ match client.query_one("SELECT name FROM users WHERE id = @P1", &[&7i32]).await 
 
 `Error` is `Send + Sync + 'static`, so it also works with `anyhow`, `eyre` and
 friends via `?`.
+
+## Blocking client
+
+If you are not in an async program, enable the `blocking` feature:
+
+```toml
+[dependencies]
+tdsql = { version = "0.1", features = ["blocking"] }
+```
+
+`tdsql::blocking::Client` mirrors the async client with the `async`/`await`
+removed. Everything else — typed rows, `Command`, transactions, savepoints — is
+the same, and `Row`, `DataSet` and `Error` are the very same types.
+
+```rust,no_run
+use tdsql::blocking::Client;
+use tdsql::Config;
+
+fn main() -> tdsql::Result<()> {
+    let mut client = Client::connect(
+        &Config::new()
+            .host("localhost")
+            .database("master")
+            .auth("sa", "YourStrong!Passw0rd")
+            .trust_cert(),
+    )?;
+
+    let row = client.query_one("SELECT @P1 AS n", &[&42i32])?;
+    let n: i32 = row.get("n");
+
+    let mut tx = client.transaction()?;
+    tx.execute("INSERT INTO orders (id) VALUES (@P1)", &[&1i32])?;
+    tx.commit()?;
+
+    Ok(())
+}
+```
+
+Each blocking client owns a small runtime, so **it must not be used from inside
+an async runtime** — driving a runtime from within another one panics.
+`Client::connect` detects that case and returns `Error::BlockingInAsync` up
+front rather than letting a later call blow up. In async code, use
+`tdsql::Client` directly.
 
 ## Type mapping
 
