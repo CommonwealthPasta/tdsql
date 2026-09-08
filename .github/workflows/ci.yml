@@ -23,11 +23,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Build
-        run: cargo build --all-targets
+        run: cargo build --all-targets --all-features
       - name: Build documentation
-        run: cargo doc --no-deps
+        run: cargo doc --no-deps --all-features
 
   # The MSRV declared in Cargo.toml has to keep compiling, or the field lies.
   msrv:
@@ -40,7 +40,7 @@ jobs:
           toolchain: "1.88"
       - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
       - name: Build on MSRV
-        run: cargo build
+        run: cargo build --all-features
 
   test:
     name: Test
@@ -75,9 +75,9 @@ jobs:
       # Unit, integration and doc tests. The integration tests are #[ignore]d
       # by default because they need the database above.
       - name: Run tests
-        run: cargo test --all-targets -- --include-ignored
+        run: cargo test --all-targets --all-features -- --include-ignored
       - name: Run doc tests
-        run: cargo test --doc
+        run: cargo test --doc --all-features
 
   # Catch packaging problems here rather than at release time.
   package:
