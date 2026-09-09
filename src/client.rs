@@ -20,7 +20,7 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use crate::command::{Command, Prepared};
 use crate::config::Config;
 use crate::dataset::{DataSet, DataTable};
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, StatementKind};
 use crate::row::{Column, Row};
 use crate::transaction::{IsolationLevel, Transaction};
 use crate::value::{DataValue, FromSql, SqlType, ToSql};
@@ -298,7 +298,9 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
     while let Some(request) = rx.recv().await {
         match request {
             Request::Query { sql, params, reply } => {
-                let result = run_query(&mut driver, &sql, &params).await;
+                let result = run_query(&mut driver, &sql, &params)
+                    .await
+                    .map_err(|e| e.with_statement(StatementKind::Query, &sql, params.len()));
                 let _ = reply.send(result);
             }
             Request::Execute { sql, params, reply } => {
@@ -309,6 +311,8 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                     .map(|r| r.total())
                     .map_err(Error::from);
                 drop(refs);
+                let result =
+                    result.map_err(|e| e.with_statement(StatementKind::Query, &sql, params.len()));
                 let _ = reply.send(result);
             }
             Request::Batch { sql, reply } => {
@@ -316,14 +320,18 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                     Ok(stream) => collect_query_stream(stream).await,
                     Err(e) => Err(Error::from(e)),
                 };
-                let _ = reply.send(result);
+                let _ =
+                    reply.send(result.map_err(|e| e.with_statement(StatementKind::Batch, &sql, 0)));
             }
             Request::ProcQuery {
                 name,
                 params,
                 reply,
             } => {
-                let result = run_proc_query(&mut driver, name, params).await;
+                let count = params.len();
+                let result = run_proc_query(&mut driver, &name, params)
+                    .await
+                    .map_err(|e| e.with_statement(StatementKind::StoredProcedure, &name, count));
                 let _ = reply.send(result);
             }
             Request::ProcExecute {
@@ -331,18 +339,30 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 params,
                 reply,
             } => {
-                let result = run_proc_execute(&mut driver, name, params).await;
+                let count = params.len();
+                let result = run_proc_execute(&mut driver, &name, params)
+                    .await
+                    .map_err(|e| e.with_statement(StatementKind::StoredProcedure, &name, count));
                 let _ = reply.send(result);
             }
             Request::Begin { level, reply } => {
                 let result = driver
                     .begin_transaction_with_isolation(level.into())
                     .await
-                    .map_err(Error::from);
+                    .map_err(Error::from)
+                    .map_err(|e| {
+                        e.with_statement(StatementKind::TransactionControl, "BEGIN TRANSACTION", 0)
+                    });
                 let _ = reply.send(result);
             }
             Request::Commit { reply } => {
-                let result = driver.commit_transaction().await.map_err(Error::from);
+                let result = driver
+                    .commit_transaction()
+                    .await
+                    .map_err(Error::from)
+                    .map_err(|e| {
+                        e.with_statement(StatementKind::TransactionControl, "COMMIT TRANSACTION", 0)
+                    });
                 let _ = reply.send(result);
             }
             Request::Savepoint { name, reply } => {
@@ -360,10 +380,23 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                     Ok(stream) => collect_query_stream(stream).await.map(|_| ()),
                     Err(e) => Err(Error::from(e)),
                 };
-                let _ = reply.send(result);
+                let _ = reply.send(
+                    result
+                        .map_err(|e| e.with_statement(StatementKind::TransactionControl, &sql, 0)),
+                );
             }
             Request::Rollback { reply } => {
-                let result = driver.rollback_transaction().await.map_err(Error::from);
+                let result = driver
+                    .rollback_transaction()
+                    .await
+                    .map_err(Error::from)
+                    .map_err(|e| {
+                        e.with_statement(
+                            StatementKind::TransactionControl,
+                            "ROLLBACK TRANSACTION",
+                            0,
+                        )
+                    });
                 if let Some(reply) = reply {
                     let _ = reply.send(result);
                 }
@@ -376,7 +409,8 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 let result = match driver.simple_query(&sql).await {
                     Ok(stream) => collect_query_stream(stream).await.map(|_| ()),
                     Err(e) => Err(Error::from(e)),
-                };
+                }
+                .map_err(|e| e.with_statement(StatementKind::TransactionControl, &sql, 0));
                 if let Some(reply) = reply {
                     let _ = reply.send(result);
                 }
@@ -394,8 +428,8 @@ async fn run_query(driver: &mut Driver, sql: &str, params: &[DataValue]) -> Resu
     collect_query_stream(stream).await
 }
 
-fn build_proc<'a>(name: String, params: Vec<(String, DataValue)>) -> tiberius::Command<'a> {
-    let mut cmd = tiberius::Command::new(name);
+fn build_proc<'a>(name: &str, params: Vec<(String, DataValue)>) -> tiberius::Command<'a> {
+    let mut cmd = tiberius::Command::new(name.to_string());
     for (pname, value) in params {
         cmd.bind_param(pname, value);
     }
@@ -404,7 +438,7 @@ fn build_proc<'a>(name: String, params: Vec<(String, DataValue)>) -> tiberius::C
 
 async fn run_proc_query(
     driver: &mut Driver,
-    name: String,
+    name: &str,
     params: Vec<(String, DataValue)>,
 ) -> Result<DataSet> {
     let mut stream = build_proc(name, params).exec(driver).await?;
@@ -441,7 +475,7 @@ async fn run_proc_query(
 
 async fn run_proc_execute(
     driver: &mut Driver,
-    name: String,
+    name: &str,
     params: Vec<(String, DataValue)>,
 ) -> Result<u64> {
     let mut stream = build_proc(name, params).exec(driver).await?;

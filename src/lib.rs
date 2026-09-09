@@ -19,7 +19,7 @@ pub use client::Client;
 pub use command::{Command, CommandType, Parameter};
 pub use config::Config;
 pub use dataset::{DataSet, DataTable};
-pub use error::{Error, Result};
+pub use error::{Error, Result, StatementKind};
 pub use row::{Column, Row, RowIndex};
 pub use transaction::{IsolationLevel, Transaction};
 pub use value::{DataValue, FromSql, SqlType, ToSql};

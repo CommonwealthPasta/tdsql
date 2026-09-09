@@ -323,6 +323,37 @@ match client.query_one("SELECT name FROM users WHERE id = @P1", &[&7i32]).await 
 # }
 ```
 
+A statement that the server rejects fails with `Error::Query`, which names what
+was running and repeats what the server said, so printing the error alone is
+enough to diagnose it:
+
+```text
+query failed [SELECT id FROM nope]: Invalid object name 'nope'. [error 208, state 1, severity 16, line 1]
+```
+
+The same details are readable field by field, which is how to branch on a
+specific server error rather than on its message text:
+
+```rust,no_run
+# use tdsql::Client;
+# async fn f(client: &mut Client) {
+if let Err(e) = client.execute("INSERT INTO users (id) VALUES (@P1)", &[&7i32]).await {
+    eprintln!("{} failed", e.statement().unwrap_or("statement"));
+    if let (Some(code), Some(message)) = (e.code(), e.server_message()) {
+        eprintln!("  server said {code}: {message} (line {})", e.line().unwrap_or(0));
+    }
+    if e.is_deadlock() {
+        // Deadlock victim (error 1205): the transaction is gone, retry it.
+    }
+}
+# }
+```
+
+Parameter *values* are never captured into the message — they routinely hold
+personal data — but `parameter_count()` records how many were bound, and
+`statement_kind()` says whether the failure came from a query, a batch, a stored
+procedure, or transaction control.
+
 `Error` is `Send + Sync + 'static`, so it also works with `anyhow`, `eyre` and
 friends via `?`.
 
