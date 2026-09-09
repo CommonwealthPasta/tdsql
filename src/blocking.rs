@@ -262,3 +262,150 @@ impl Transaction<'_> {
         self.runtime.block_on(self.inner.execute_command(command))
     }
 }
+
+mod sealed {
+    use tokio::runtime::Runtime;
+
+    /// Grants the default method bodies the runtime and the async connection
+    /// underneath.
+    ///
+    /// Deliberately not public: handing out the inner client from a
+    /// `Transaction` would let a caller commit or roll back behind the
+    /// transaction's back.
+    pub trait Sealed {
+        fn parts(&mut self) -> (&Runtime, &mut crate::Client);
+    }
+}
+
+pub(crate) use sealed::Sealed;
+
+impl Sealed for Client {
+    fn parts(&mut self) -> (&Runtime, &mut crate::Client) {
+        let Self { runtime, inner } = self;
+        (runtime, inner)
+    }
+}
+
+impl Sealed for Transaction<'_> {
+    fn parts(&mut self) -> (&Runtime, &mut crate::Client) {
+        let Self { runtime, inner } = self;
+        (runtime, inner.client_mut())
+    }
+}
+
+impl<T: Sealed + ?Sized> Sealed for &mut T {
+    fn parts(&mut self) -> (&Runtime, &mut crate::Client) {
+        (**self).parts()
+    }
+}
+
+/// Anything blocking statements can be run against: a [`Client`] or a
+/// [`Transaction`].
+///
+/// The blocking counterpart to [`tdsql::Executor`](crate::Executor). Take
+/// `&mut impl Executor` in a helper and the caller decides whether the work
+/// lands on the connection directly or inside a transaction:
+///
+/// ```no_run
+/// use tdsql::blocking::{Client, Executor};
+/// use tdsql::{Result, Row};
+///
+/// fn load_user(db: &mut impl Executor, id: i32) -> Result<Row> {
+///     db.query_one("SELECT id, name FROM users WHERE id = @P1", &[&id])
+/// }
+///
+/// # fn f(client: &mut Client) -> Result<()> {
+/// // Straight to the connection...
+/// let user = load_user(client, 1)?;
+///
+/// // ...or inside a transaction, unchanged.
+/// let mut tx = client.transaction()?;
+/// let user = load_user(&mut tx, 1)?;
+/// tx.commit()?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// The trait is sealed — it describes the two types this crate provides rather
+/// than an extension point.
+pub trait Executor: Sealed {
+    /// Open a transaction scoped to this executor.
+    ///
+    /// On a [`Client`] this begins a real transaction. On a [`Transaction`] it
+    /// opens a savepoint instead, so a helper that wants its own atomic scope
+    /// nests correctly rather than trying to begin a second transaction on a
+    /// connection that already has one.
+    fn transaction(&mut self) -> Result<Transaction<'_>>;
+
+    /// Run a query and collect every row of the first result set.
+    fn query(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<Vec<Row>> {
+        let (runtime, client) = self.parts();
+        runtime.block_on(client.query(sql, params))
+    }
+
+    /// Run a query expecting exactly one row.
+    fn query_one(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<Row> {
+        let (runtime, client) = self.parts();
+        runtime.block_on(client.query_one(sql, params))
+    }
+
+    /// Run a query expecting at most one row.
+    fn query_opt(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<Option<Row>> {
+        let (runtime, client) = self.parts();
+        runtime.block_on(client.query_opt(sql, params))
+    }
+
+    /// Run a query and read the first column of the first row.
+    fn query_scalar<T: FromSql>(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<T> {
+        let (runtime, client) = self.parts();
+        runtime.block_on(client.query_scalar(sql, params))
+    }
+
+    /// Run a statement and report how many rows it affected.
+    fn execute(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<u64> {
+        let (runtime, client) = self.parts();
+        runtime.block_on(client.execute(sql, params))
+    }
+
+    /// Run a SQL batch verbatim and collect its rows.
+    fn batch(&mut self, sql: &str) -> Result<Vec<Row>> {
+        let (runtime, client) = self.parts();
+        runtime.block_on(client.batch(sql))
+    }
+
+    /// Run a SQL batch verbatim and collect every result set.
+    fn batch_dataset(&mut self, sql: &str) -> Result<DataSet> {
+        let (runtime, client) = self.parts();
+        runtime.block_on(client.batch_dataset(sql))
+    }
+
+    /// Run a [`Command`] and collect every result set it produces.
+    fn query_dataset(&mut self, command: &Command) -> Result<DataSet> {
+        let (runtime, client) = self.parts();
+        runtime.block_on(client.query_dataset(command))
+    }
+
+    /// Run a [`Command`] for its row count rather than its rows.
+    fn execute_command(&mut self, command: &Command) -> Result<u64> {
+        let (runtime, client) = self.parts();
+        runtime.block_on(client.execute_command(command))
+    }
+}
+
+impl Executor for Client {
+    fn transaction(&mut self) -> Result<Transaction<'_>> {
+        Client::transaction(self)
+    }
+}
+
+impl Executor for Transaction<'_> {
+    fn transaction(&mut self) -> Result<Transaction<'_>> {
+        Transaction::transaction(self)
+    }
+}
+
+impl<T: Executor + ?Sized> Executor for &mut T {
+    fn transaction(&mut self) -> Result<Transaction<'_>> {
+        (**self).transaction()
+    }
+}

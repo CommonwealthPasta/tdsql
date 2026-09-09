@@ -264,6 +264,71 @@ background task that serves requests in order, so the rollback is guaranteed to
 reach the server before any later statement on that connection. Use
 `rollback()` explicitly when you want to observe an error from it.
 
+## Writing helpers that work either way
+
+A helper written against `&mut Client` cannot be called inside a transaction,
+and one written against `&mut Transaction` cannot be called without one. The
+`Executor` trait removes the choice: take `&mut impl Executor` and the caller
+decides.
+
+```rust,no_run
+# use tdsql::{Client, Executor, Result, Row};
+async fn load_user(db: &mut impl Executor, id: i32) -> Result<Row> {
+    db.query_one("SELECT id, name FROM users WHERE id = @P1", &[&id])
+        .await
+}
+
+# async fn f(client: &mut Client) -> Result<()> {
+// Straight to the connection...
+let user = load_user(client, 1).await?;
+
+// ...or inside a transaction, unchanged.
+let mut tx = client.transaction().await?;
+let user = load_user(&mut tx, 1).await?;
+tx.commit().await?;
+# Ok(())
+# }
+```
+
+`Executor` carries the statement methods — `query`, `query_one`, `query_opt`,
+`query_scalar`, `execute`, `batch`, `batch_dataset`, `query_dataset`,
+`execute_command` — so an existing helper becomes generic by changing only its
+signature.
+
+It also carries `transaction()`, which is the interesting one: on a `Client` it
+begins a real transaction, and on a `Transaction` it opens a *savepoint*. A
+helper that wants its own atomic scope therefore nests correctly instead of
+trying to begin a second transaction on a connection that already has one:
+
+```rust,no_run
+# use tdsql::{Client, Executor, Result};
+/// Rolls back its own work without disturbing whatever it was called from.
+async fn try_it(db: &mut impl Executor) -> Result<()> {
+    let mut scope = db.transaction().await?;
+    scope.execute("INSERT INTO audit (id) VALUES (@P1)", &[&1i32]).await?;
+    scope.rollback().await
+}
+
+# async fn f(client: &mut Client) -> Result<()> {
+// Here the scope is a transaction, and rolling it back discards the insert.
+try_it(client).await?;
+
+// Here it is a savepoint: the insert is discarded, the outer work is not.
+let mut tx = client.transaction().await?;
+tx.execute("INSERT INTO orders (id) VALUES (@P1)", &[&1i32]).await?;
+try_it(&mut tx).await?;
+tx.commit().await?;
+# Ok(())
+# }
+```
+
+The blocking client has the same trait as `tdsql::blocking::Executor`, with the
+`async`/`await` removed.
+
+The trait is sealed — it describes the two types this crate provides rather
+than an extension point — and it is generics-only, not dyn-compatible, so use
+`&mut impl Executor` or `<E: Executor>` rather than `&mut dyn Executor`.
+
 ## DDL and raw batches
 
 Parameterised statements are sent as an RPC, and some statements — `CREATE
@@ -367,8 +432,9 @@ tdsql = { version = "0.1", features = ["blocking"] }
 ```
 
 `tdsql::blocking::Client` mirrors the async client with the `async`/`await`
-removed. Everything else — typed rows, `Command`, transactions, savepoints — is
-the same, and `Row`, `DataSet` and `Error` are the very same types.
+removed. Everything else — typed rows, `Command`, transactions, savepoints, the
+`Executor` trait — is the same, and `Row`, `DataSet` and `Error` are the very
+same types.
 
 ```rust,no_run
 use tdsql::blocking::Client;

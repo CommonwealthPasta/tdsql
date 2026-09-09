@@ -142,6 +142,11 @@ impl<'a> Transaction<'a> {
         }
     }
 
+    /// The connection underneath, for the `Executor` default method bodies.
+    pub(crate) fn client_mut(&mut self) -> &mut Client {
+        self.client
+    }
+
     /// Open a nested transaction, backed by an automatically named savepoint.
     pub async fn transaction(&mut self) -> Result<Transaction<'_>> {
         let name = format!("_tdsql_sp{}", self.client.next_savepoint_id());
