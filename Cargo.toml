@@ -1,6 +1,6 @@
 [package]
 name = "tdsql"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 authors = ["CommonwealthPasta"]
@@ -32,6 +32,11 @@ rust_decimal = "1.43"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["macros", "rt-multi-thread"] }
+# Depending on ourselves as a dev-dependency turns on `blocking` for test
+# targets only, so `cargo test` covers the feature-gated examples without
+# adding it to the default feature set. Path-only dev-dependencies are
+# stripped when the crate is published.
+tdsql = { path = ".", features = ["blocking"] }
 
 [[example]]
 name = "blocking"
