@@ -25,3 +25,11 @@ pub use executor::Executor;
 pub use row::{Column, Row, RowIndex};
 pub use transaction::{IsolationLevel, Transaction};
 pub use value::{DataValue, FromSql, SqlType, ToSql};
+
+/// The `chrono` version this crate binds against.
+///
+/// `chrono` types appear in the public API ([`DataValue::DateTimeOffset`] and
+/// friends), so bindings only type-check against a matching version. Reach for
+/// this re-export -- `tdsql::chrono::Utc` -- rather than adding a second
+/// `chrono` to your manifest and risking two incompatible copies in the graph.
+pub use chrono;

@@ -184,27 +184,144 @@ fn is_ordinal_placeholder(name: &str) -> bool {
     }
 }
 
-/// Replace every occurrence of `needle` that ends on an identifier boundary, so
-/// `@id` does not match inside `@id2`.
+/// The lexical regions of a T-SQL batch. A `@name` token is only a placeholder
+/// in `Sql`; anywhere else it is somebody's data or prose and must survive
+/// untouched.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Region {
+    Sql,
+    /// `'...'`. A doubled `''` is an escaped quote and stays inside.
+    String,
+    /// `"..."`, a quoted identifier. A doubled `""` stays inside.
+    QuotedIdent,
+    /// `[...]`, a bracketed identifier. A doubled `]]` stays inside.
+    BracketIdent,
+    /// `-- ...`, to the end of the line.
+    LineComment,
+    /// `/* ... */`, which nests in T-SQL, so the depth is carried.
+    BlockComment(u32),
+}
+
+/// Characters that continue a T-SQL identifier. `@`, `$` and `#` are all legal
+/// inside one, so `@id` must not match inside `@@id`, `@id2` or `@id$x`.
+fn is_ident_continue(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '@' || c == '$' || c == '#'
+}
+
+/// Replace every occurrence of `needle` that stands alone as an identifier and
+/// sits in executable SQL.
+///
+/// Two things are skipped. Identifier boundaries on *both* sides, so `@id`
+/// matches neither `@id2` nor `@@id`. And whole non-SQL regions — string
+/// literals, quoted and bracketed identifiers, and comments — so binding `id`
+/// no longer rewrites `'@id'` or `'email@id.com'` into the placeholder.
 ///
 /// Copies whole UTF-8 characters, so non-ASCII SQL (`N'café'`) survives intact.
 fn replace_param_token(haystack: &str, needle: &str, replacement: &str) -> String {
     let bytes = haystack.as_bytes();
     let nlen = needle.len();
     let mut out = String::with_capacity(haystack.len());
+    let mut region = Region::Sql;
+    // The last character written, for the left-hand identifier boundary.
+    let mut prev: Option<char> = None;
     let mut i = 0;
 
-    while i < bytes.len() {
-        let matches = bytes[i..].starts_with(needle.as_bytes())
-            && match bytes.get(i + nlen) {
-                None => true,
-                Some(&c) => !(c.is_ascii_alphanumeric() || c == b'_'),
-            };
-
-        if matches {
-            out.push_str(replacement);
-            i += nlen;
+    // Copy a fixed ASCII delimiter and step past it.
+    macro_rules! emit {
+        ($text:expr) => {{
+            out.push_str($text);
+            prev = $text.chars().last();
+            i += $text.len();
             continue;
+        }};
+    }
+
+    while i < bytes.len() {
+        match region {
+            Region::Sql => {
+                match bytes[i] {
+                    b'\'' => {
+                        region = Region::String;
+                        emit!("'")
+                    }
+                    b'"' => {
+                        region = Region::QuotedIdent;
+                        emit!("\"")
+                    }
+                    b'[' => {
+                        region = Region::BracketIdent;
+                        emit!("[")
+                    }
+                    b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                        region = Region::LineComment;
+                        emit!("--")
+                    }
+                    b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                        region = Region::BlockComment(1);
+                        emit!("/*")
+                    }
+                    _ => {}
+                }
+
+                // `starts_with` comes first: only once it matches is `i + nlen`
+                // known to land on a character boundary, so the slice below
+                // cannot split a multi-byte character.
+                if bytes[i..].starts_with(needle.as_bytes())
+                    && prev.is_none_or(|c| !is_ident_continue(c))
+                    && haystack[i + nlen..]
+                        .chars()
+                        .next()
+                        .is_none_or(|c| !is_ident_continue(c))
+                {
+                    out.push_str(replacement);
+                    prev = replacement.chars().last();
+                    i += nlen;
+                    continue;
+                }
+            }
+            Region::String => {
+                if bytes[i] == b'\'' {
+                    if bytes.get(i + 1) == Some(&b'\'') {
+                        emit!("''")
+                    }
+                    region = Region::Sql;
+                }
+            }
+            Region::QuotedIdent => {
+                if bytes[i] == b'"' {
+                    if bytes.get(i + 1) == Some(&b'"') {
+                        emit!("\"\"")
+                    }
+                    region = Region::Sql;
+                }
+            }
+            Region::BracketIdent => {
+                if bytes[i] == b']' {
+                    if bytes.get(i + 1) == Some(&b']') {
+                        emit!("]]")
+                    }
+                    region = Region::Sql;
+                }
+            }
+            Region::LineComment => {
+                if bytes[i] == b'\n' {
+                    region = Region::Sql;
+                }
+            }
+            Region::BlockComment(depth) => {
+                if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                    region = Region::BlockComment(depth + 1);
+                    emit!("/*")
+                }
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    region = if depth == 1 {
+                        Region::Sql
+                    } else {
+                        Region::BlockComment(depth - 1)
+                    };
+                    emit!("*/")
+                }
+            }
         }
 
         // Advance by a whole character, never a lone byte.
@@ -213,6 +330,7 @@ fn replace_param_token(haystack: &str, needle: &str, replacement: &str) -> Strin
             .next()
             .expect("index is on a char boundary");
         out.push(ch);
+        prev = Some(ch);
         i += ch.len_utf8();
     }
 

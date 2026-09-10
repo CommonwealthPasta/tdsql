@@ -126,3 +126,83 @@ fn maps_driver_column_types() {
         SqlType::NVarChar
     );
 }
+
+#[test]
+fn binds_any_timezone_as_datetimeoffset() {
+    // The same instant in three zones must bind to the same offset value.
+    let utc = Utc.with_ymd_and_hms(2024, 3, 1, 12, 0, 0).unwrap();
+    let plus_two = FixedOffset::east_opt(2 * 3600).unwrap();
+    let aware = utc.with_timezone(&plus_two);
+
+    let expected = DataValue::DateTimeOffset(utc.fixed_offset());
+    assert_eq!(utc.to_value(), expected);
+    assert_eq!(aware.to_value(), expected);
+    assert_eq!(utc.with_timezone(&Local).to_value(), expected);
+
+    // ...and `From` agrees with `ToSql`.
+    assert_eq!(DataValue::from(utc), expected);
+    assert_eq!(DataValue::from(aware), expected);
+}
+
+#[test]
+fn binding_a_zoned_timestamp_keeps_the_wall_clock_of_its_zone() {
+    // 14:00 at +02:00 is the same instant as 12:00Z, and that is what goes out.
+    let plus_two = FixedOffset::east_opt(2 * 3600).unwrap();
+    let aware = plus_two.with_ymd_and_hms(2024, 3, 1, 14, 0, 0).unwrap();
+
+    let DataValue::DateTimeOffset(sent) = aware.to_value() else {
+        panic!("expected a datetimeoffset");
+    };
+    assert_eq!(sent.naive_local().to_string(), "2024-03-01 14:00:00");
+    assert_eq!(sent.offset().local_minus_utc(), 2 * 3600);
+    assert_eq!(sent.to_utc().to_string(), "2024-03-01 12:00:00 UTC");
+}
+
+#[test]
+fn reads_datetimeoffset_into_any_zone() {
+    let plus_two = FixedOffset::east_opt(2 * 3600).unwrap();
+    let aware = plus_two.with_ymd_and_hms(2024, 3, 1, 14, 0, 0).unwrap();
+    let stored = DataValue::DateTimeOffset(aware);
+
+    // Reading re-projects the zone but names the same instant.
+    assert_eq!(
+        get::<DateTime<Utc>>(stored.clone()).unwrap(),
+        Utc.with_ymd_and_hms(2024, 3, 1, 12, 0, 0).unwrap()
+    );
+    assert_eq!(get::<DateTime<Local>>(stored.clone()).unwrap(), aware);
+    assert_eq!(get::<DateTime<FixedOffset>>(stored.clone()).unwrap(), aware);
+    assert_eq!(get::<Option<DateTime<Utc>>>(DataValue::Null).unwrap(), None);
+}
+
+#[test]
+fn a_naive_datetime_is_not_silently_called_utc() {
+    // `datetime2` carries no offset, so reading one as an aware type would be a
+    // guess. It stays an error; the caller picks the zone explicitly.
+    let naive = NaiveDate::from_ymd_opt(2024, 3, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let err = get::<DateTime<Utc>>(DataValue::DateTime(naive)).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "cannot convert column 'col' from DateTime to DateTime<Utc>"
+    );
+
+    // The explicit route works, and is one call.
+    assert_eq!(
+        naive.and_utc().to_value(),
+        DataValue::DateTimeOffset(naive.and_utc().fixed_offset())
+    );
+}
+
+#[test]
+fn compares_equal_across_zones() {
+    let utc = Utc.with_ymd_and_hms(2024, 3, 1, 12, 0, 0).unwrap();
+    let plus_two = FixedOffset::east_opt(2 * 3600).unwrap();
+    let value = DataValue::DateTimeOffset(utc.fixed_offset());
+
+    assert_eq!(value, utc);
+    assert_eq!(value, utc.with_timezone(&plus_two));
+    assert_ne!(value, utc + chrono::Duration::hours(1));
+    assert_ne!(DataValue::Null, utc);
+}

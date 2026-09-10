@@ -483,10 +483,44 @@ front rather than letting a later call blow up. In async code, use
 | `date` | `Date` | `chrono::NaiveDate` |
 | `time` | `Time` | `chrono::NaiveTime` |
 | `datetime`, `datetime2`, `smalldatetime` | `DateTime` | `chrono::NaiveDateTime` |
-| `datetimeoffset` | `DateTimeOffset` | `chrono::DateTime<FixedOffset>` |
+| `datetimeoffset` | `DateTimeOffset` | `chrono::DateTime<FixedOffset>`, `DateTime<Utc>`, `DateTime<Local>` |
 | any `NULL` | `Null` | `Option<T>` |
 
 Any column reads as `DataValue` if you would rather match on it yourself.
+
+### Time zones
+
+A `chrono::DateTime<Tz>` binds directly for *any* time zone -- `Utc`, `Local`, a
+`FixedOffset`, or a named zone from `chrono-tz`. It is normalised to its UTC
+offset and sent as `datetimeoffset`, so the instant survives the round trip
+whatever zone you wrote it in:
+
+```rust,no_run
+use chrono::{Local, Utc};
+use tdsql::{Client, Config};
+
+# async fn run(config: &Config) -> tdsql::Result<()> {
+let mut client = Client::connect(config).await?;
+
+client
+    .execute("INSERT INTO events (at) VALUES (@P1)", &[&Utc::now()])
+    .await?;
+
+let rows = client.query("SELECT at FROM events", &[]).await?;
+let at: chrono::DateTime<Utc> = rows[0].get("at");
+let same_instant: chrono::DateTime<Local> = rows[0].get("at");
+assert_eq!(at, same_instant);
+# Ok(())
+# }
+```
+
+Reading back into `DateTime<Utc>` or `DateTime<Local>` re-projects the offset
+the server sent, which names the same instant.
+
+`datetime2` and friends are the exception, in *both* directions: they carry no
+offset, so calling one UTC would be a guess rather than a conversion. Those
+columns bind from and read as `NaiveDateTime`, and you attach the zone yourself
+-- `naive.and_utc()` going out, `.and_utc()` on the way back in.
 
 ### Known limitation: untyped NULLs
 

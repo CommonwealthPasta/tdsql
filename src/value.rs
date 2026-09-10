@@ -1,6 +1,6 @@
 //! The dynamic value type, the SQL type tags, and the conversion traits.
 
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
@@ -167,6 +167,11 @@ impl From<tiberius::ColumnType> for SqlType {
 ///
 /// Implemented for the primitive types, `chrono` date/time types, [`Decimal`],
 /// [`Uuid`], and `Option<T>` for any `T: ToSql` (binding SQL `NULL`).
+///
+/// `DateTime<Tz>` is implemented for *any* chrono time zone -- [`Utc`],
+/// [`Local`], [`FixedOffset`], or a `chrono_tz::Tz` -- so an aware timestamp
+/// can be bound directly. It is normalised to its UTC offset and sent as
+/// `datetimeoffset`, which preserves the instant whatever zone it came from.
 pub trait ToSql: Send + Sync {
     /// Convert to the dynamic value that gets sent to the server.
     fn to_value(&self) -> DataValue;
@@ -215,7 +220,20 @@ impl_to_sql! {
     NaiveDate => Date,
     NaiveTime => Time,
     NaiveDateTime => DateTime,
-    DateTime<FixedOffset> => DateTimeOffset,
+}
+
+/// Any time-zone-aware timestamp binds as `datetimeoffset`.
+///
+/// The zone is carried through as a fixed offset, so `Utc`, `Local` and a named
+/// zone all round-trip to the same instant the server stores.
+impl<Tz> ToSql for DateTime<Tz>
+where
+    Tz: TimeZone + Send + Sync,
+    Tz::Offset: Send + Sync,
+{
+    fn to_value(&self) -> DataValue {
+        DataValue::DateTimeOffset(self.fixed_offset())
+    }
 }
 
 impl ToSql for str {
@@ -259,7 +277,12 @@ impl_from! {
     NaiveDate => Date,
     NaiveTime => Time,
     NaiveDateTime => DateTime,
-    DateTime<FixedOffset> => DateTimeOffset,
+}
+
+impl<Tz: TimeZone> From<DateTime<Tz>> for DataValue {
+    fn from(v: DateTime<Tz>) -> Self {
+        DataValue::DateTimeOffset(v.fixed_offset())
+    }
 }
 
 impl From<&str> for DataValue {
@@ -418,6 +441,20 @@ impl_from_sql!(
     }
 );
 
+// Reading into `Utc` or `Local` re-projects the offset the server sent, which
+// names the same instant. A bare `datetime2` is *not* accepted here: it carries
+// no offset, so calling it UTC would be a guess rather than a conversion. Read
+// it as `NaiveDateTime` and pick the zone yourself, e.g. `.and_utc()`.
+impl_from_sql!(DateTime<Utc>, "DateTime<Utc>", |v| match v {
+    DataValue::DateTimeOffset(d) => Some(d.with_timezone(&Utc)),
+    _ => None,
+});
+
+impl_from_sql!(DateTime<Local>, "DateTime<Local>", |v| match v {
+    DataValue::DateTimeOffset(d) => Some(d.with_timezone(&Local)),
+    _ => None,
+});
+
 impl FromSql for DataValue {
     fn from_sql(value: &DataValue, _column: &str) -> Result<Self> {
         Ok(value.clone())
@@ -471,9 +508,13 @@ impl_partial_eq!(
     NaiveDateTime,
     |s, o| matches!(s, DataValue::DateTime(v) if v == o)
 );
-impl_partial_eq!(DateTime<FixedOffset>, |s, o| {
-    matches!(s, DataValue::DateTimeOffset(v) if v == o)
-});
+// Generic over the zone, and chrono compares instants across zones, so the same
+// moment written as `Utc` and as `FixedOffset` both match.
+impl<Tz: TimeZone> PartialEq<DateTime<Tz>> for DataValue {
+    fn eq(&self, other: &DateTime<Tz>) -> bool {
+        matches!(self, DataValue::DateTimeOffset(v) if v == other)
+    }
+}
 impl_partial_eq!(Vec<u8>, |s, o| matches!(s, DataValue::Binary(v) if v == o));
 impl_partial_eq!(
     &[u8],

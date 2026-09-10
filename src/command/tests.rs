@@ -51,6 +51,98 @@ fn preserves_non_ascii_with_no_params() {
 }
 
 #[test]
+fn leaves_string_literals_alone() {
+    // Regression: `'@id'` and `'email@id.com'` used to be rewritten into the
+    // placeholder, silently corrupting the literal.
+    let cmd =
+        Command::query("SELECT @id AS bound, '@id' AS lit, 'email@id.com' AS addr").param("id", 7);
+    assert_eq!(
+        text_sql(&cmd),
+        "SELECT @P1 AS bound, '@id' AS lit, 'email@id.com' AS addr"
+    );
+}
+
+#[test]
+fn handles_doubled_quotes_inside_a_literal() {
+    // The `''` is an escaped quote, so the literal does not end there and the
+    // `@id` after it is still data.
+    let cmd = Command::query("SELECT 'it''s @id', @id").param("id", 1);
+    assert_eq!(text_sql(&cmd), "SELECT 'it''s @id', @P1");
+}
+
+#[test]
+fn leaves_quoted_and_bracketed_identifiers_alone() {
+    let cmd = Command::query(r#"SELECT [@id], "@id", @id"#).param("id", 1);
+    assert_eq!(text_sql(&cmd), r#"SELECT [@id], "@id", @P1"#);
+}
+
+#[test]
+fn handles_doubled_delimiters_inside_identifiers() {
+    let cmd = Command::query(r#"SELECT [a]]@id], @id"#).param("id", 1);
+    assert_eq!(text_sql(&cmd), r#"SELECT [a]]@id], @P1"#);
+}
+
+#[test]
+fn leaves_comments_alone() {
+    let cmd = Command::query("SELECT @id -- pass @id here\n, @id").param("id", 1);
+    assert_eq!(text_sql(&cmd), "SELECT @P1 -- pass @id here\n, @P1");
+}
+
+#[test]
+fn leaves_block_comments_alone() {
+    let cmd = Command::query("SELECT /* @id */ @id").param("id", 1);
+    assert_eq!(text_sql(&cmd), "SELECT /* @id */ @P1");
+}
+
+#[test]
+fn block_comments_nest() {
+    // T-SQL nests block comments, so the first `*/` does not end the outer one.
+    let cmd = Command::query("SELECT /* a /* @id */ @id */ @id").param("id", 1);
+    assert_eq!(text_sql(&cmd), "SELECT /* a /* @id */ @id */ @P1");
+}
+
+#[test]
+fn respects_the_left_identifier_boundary() {
+    // Regression: `@id` used to match inside `@@id`, which is how T-SQL spells
+    // a global variable such as `@@ROWCOUNT`.
+    let cmd = Command::query("SELECT @@id, @id").param("id", 1);
+    assert_eq!(text_sql(&cmd), "SELECT @@id, @P1");
+}
+
+#[test]
+fn treats_dollar_and_hash_as_identifier_characters() {
+    // Both are legal inside a T-SQL identifier, so neither token is `@id`.
+    let cmd = Command::query("SELECT @id$x, @id#y, @id").param("id", 1);
+    assert_eq!(text_sql(&cmd), "SELECT @id$x, @id#y, @P1");
+}
+
+#[test]
+fn rewrites_after_a_literal_containing_a_quote() {
+    // The scanner has to leave the literal in the right state, or every
+    // placeholder after it is missed.
+    let cmd = Command::query("SELECT 'a''b', @id, 'c', @flag")
+        .param("id", 1)
+        .param("flag", 2);
+    assert_eq!(text_sql(&cmd), "SELECT 'a''b', @P1, 'c', @P2");
+}
+
+#[test]
+fn non_ascii_inside_a_literal_does_not_split() {
+    // The needle length must never be used to index into the middle of a
+    // multi-byte character.
+    let cmd = Command::query("SELECT N'café @id 日本語', @id").param("id", 1);
+    assert_eq!(text_sql(&cmd), "SELECT N'café @id 日本語', @P1");
+}
+
+#[test]
+fn an_unterminated_literal_swallows_the_rest() {
+    // Malformed SQL is the server's problem, but the rewriter must not panic
+    // or produce something different from what the caller wrote.
+    let cmd = Command::query("SELECT '@id").param("id", 1);
+    assert_eq!(text_sql(&cmd), "SELECT '@id");
+}
+
+#[test]
 fn stored_procedure_keeps_named_params_for_rpc() {
     let cmd = Command::stored_procedure("sp_upsert")
         .param("id", 1001)
