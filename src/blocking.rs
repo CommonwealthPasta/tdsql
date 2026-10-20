@@ -4,7 +4,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! tdsql = { version = "0.1", features = ["blocking"] }
+//! tdsql = { version = "0.5.0", features = ["blocking"] }
 //! ```
 //!
 //! It is the same client with the `async` taken off: each call drives the
