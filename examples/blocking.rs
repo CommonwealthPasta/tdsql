@@ -4,8 +4,8 @@
 //! cargo run --features blocking --example blocking
 //! ```
 
-use tdsql::blocking::Client;
 use tdsql::Config;
+use tdsql::blocking::Client;
 
 fn main() -> tdsql::Result<()> {
     // Note: an ordinary `fn main`, not `#[tokio::main]`.

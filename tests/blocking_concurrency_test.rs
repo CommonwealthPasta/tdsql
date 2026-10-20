@@ -10,8 +10,8 @@
 #![cfg(feature = "blocking")]
 
 use std::thread;
-use tdsql::blocking::Client;
 use tdsql::Config;
+use tdsql::blocking::Client;
 
 /// SQL Server error 1222, "Lock request time out period exceeded".
 const LOCK_TIMEOUT: u32 = 1222;

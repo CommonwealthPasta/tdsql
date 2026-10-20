@@ -9,7 +9,7 @@
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 
 use futures::{Stream, StreamExt};
 use tokio::sync::mpsc;

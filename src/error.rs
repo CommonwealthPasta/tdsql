@@ -414,17 +414,19 @@ mod tests {
     #[test]
     fn statement_kind_names_the_route() {
         let e = query_error(StatementKind::StoredProcedure, "dbo.sp_upsert_order", 2);
-        assert!(e
-            .to_string()
-            .starts_with("stored procedure failed [dbo.sp_upsert_order]"));
+        assert!(
+            e.to_string()
+                .starts_with("stored procedure failed [dbo.sp_upsert_order]")
+        );
 
         let e = query_error(StatementKind::Batch, "CREATE VIEW v AS SELECT 1 AS x", 0);
         assert!(e.to_string().starts_with("batch failed ["));
 
         let e = query_error(StatementKind::TransactionControl, "COMMIT TRANSACTION", 0);
-        assert!(e
-            .to_string()
-            .starts_with("transaction control statement failed ["));
+        assert!(
+            e.to_string()
+                .starts_with("transaction control statement failed [")
+        );
     }
 
     #[test]
