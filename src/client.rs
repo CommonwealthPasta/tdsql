@@ -22,6 +22,7 @@ use crate::config::Config;
 use crate::dataset::{DataSet, DataTable};
 use crate::error::{Error, Result, StatementKind};
 use crate::row::{Column, Row};
+use crate::stream::{RowStream, Streamed};
 use crate::transaction::{IsolationLevel, Transaction};
 use crate::value::{DataValue, FromSql, SqlType, ToSql};
 
@@ -249,6 +250,13 @@ enum Request {
         params: Vec<DataValue>,
         reply: Reply<DataSet>,
     },
+    /// `header` gets the columns, then `rows` gets the rows as they arrive.
+    QueryStream {
+        sql: String,
+        params: Vec<DataValue>,
+        header: Reply<Arc<[Column]>>,
+        rows: mpsc::Sender<Result<Streamed>>,
+    },
     Execute {
         sql: String,
         params: Vec<DataValue>,
@@ -303,6 +311,12 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                     .map_err(|e| e.with_statement(StatementKind::Query, &sql, params.len()));
                 let _ = reply.send(result);
             }
+            Request::QueryStream {
+                sql,
+                params,
+                header,
+                rows,
+            } => stream_query(&mut driver, &sql, &params, header, rows).await,
             Request::Execute { sql, params, reply } => {
                 let refs = as_tiberius_refs(&params);
                 let result = driver
@@ -426,6 +440,96 @@ async fn run_query(driver: &mut Driver, sql: &str, params: &[DataValue]) -> Resu
     let refs = as_tiberius_refs(params);
     let stream = driver.query(sql, &refs).await?;
     collect_query_stream(stream).await
+}
+
+/// How many rows the connection task may read ahead of a [`RowStream`]'s
+/// consumer. Past this it stops reading, the server's send buffer fills, and
+/// the query waits -- so a slow consumer slows the query down instead of
+/// piling rows up in memory. Kept small because a row can be large.
+const STREAM_BUFFER: usize = 64;
+
+/// Run a query, handing the rows of its first result set to `rows` as they
+/// arrive rather than collecting them.
+///
+/// `header` gets the result set's columns before any row is sent, or the error
+/// if the statement failed before producing one. Everything after that goes to
+/// `rows`, which always ends with [`Streamed::End`] or an error.
+///
+/// Like every other request, this one is read to the end however the consumer
+/// behaves: one that hangs up early only stops rows being forwarded. Later
+/// result sets are read and dropped too, but an error in one still fails the
+/// stream, just as it fails `query`.
+async fn stream_query(
+    driver: &mut Driver,
+    sql: &str,
+    params: &[DataValue],
+    header: Reply<Arc<[Column]>>,
+    rows: mpsc::Sender<Result<Streamed>>,
+) {
+    let mut header = Some(header);
+    let mut columns: Arc<[Column]> = Arc::from(Vec::new());
+    // False once the first result set is over or the consumer has gone.
+    let mut forwarding = true;
+    // The first failure, held back until the response has been fully read so
+    // the connection is clean for the next request.
+    let mut failure: Option<Error> = None;
+
+    let refs = as_tiberius_refs(params);
+    match driver.query(sql, &refs).await {
+        Err(e) => failure = Some(e.into()),
+        Ok(mut stream) => {
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(tiberius::QueryItem::Metadata(meta)) => match header.take() {
+                        Some(header) => {
+                            columns = columns_of(&meta);
+                            forwarding = header.send(Ok(Arc::clone(&columns))).is_ok();
+                        }
+                        None => forwarding = false,
+                    },
+                    Ok(tiberius::QueryItem::Row(row)) if forwarding => {
+                        match row_of(row, &columns) {
+                            Ok(row) => {
+                                forwarding = rows.send(Ok(Streamed::Row(row))).await.is_ok();
+                            }
+                            Err(e) => {
+                                failure = Some(e);
+                                forwarding = false;
+                            }
+                        }
+                    }
+                    Ok(tiberius::QueryItem::Row(_)) => {}
+                    // The driver holds a server error back until it has read
+                    // to the end of the response, so nothing follows this.
+                    Err(e) => {
+                        failure.get_or_insert(e.into());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let last = match failure {
+        Some(e) => Err(e.with_statement(StatementKind::Query, sql, params.len())),
+        None => Ok(Streamed::End),
+    };
+    match header {
+        // Still unsent: the statement failed, or produced no result set.
+        Some(header) => match last {
+            Err(e) => {
+                let _ = header.send(Err(e));
+            }
+            Ok(end) => {
+                if header.send(Ok(columns)).is_ok() {
+                    let _ = rows.send(Ok(end)).await;
+                }
+            }
+        },
+        None => {
+            let _ = rows.send(last).await;
+        }
+    }
 }
 
 fn build_proc<'a>(name: &str, params: Vec<(String, DataValue)>) -> tiberius::Command<'a> {
@@ -581,6 +685,49 @@ impl Client {
             .query_dataset_values(sql, to_values(params))
             .await?
             .into_rows())
+    }
+
+    /// Run a query and receive the rows of its first result set as the server
+    /// sends them, rather than all at once after the last one arrives.
+    ///
+    /// Returns as soon as the server has described the columns, so a statement
+    /// the server rejects fails here, just as it would from
+    /// [`query`](Self::query). A failure partway through arrives as the
+    /// stream's last item instead, after the rows that came before it.
+    ///
+    /// The stream borrows the client until it is dropped; see [`RowStream`] for
+    /// what that holds up, and what happens if it is dropped early.
+    ///
+    /// ```no_run
+    /// # use tdsql::Client;
+    /// # async fn f(client: &mut Client) -> tdsql::Result<()> {
+    /// let mut rows = client
+    ///     .query_stream("SELECT id, name FROM users WHERE id > @P1", &[&10i32])
+    ///     .await?;
+    ///
+    /// while let Some(row) = rows.try_next().await? {
+    ///     let name: String = row.get("name");
+    ///     println!("{name}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn query_stream(
+        &mut self,
+        sql: &str,
+        params: &[&dyn ToSql],
+    ) -> Result<RowStream<'_>> {
+        let (sql, params) = (sql.to_string(), to_values(params));
+        let (rows, receiver) = mpsc::channel(STREAM_BUFFER);
+        let columns = self
+            .call(|header| Request::QueryStream {
+                sql,
+                params,
+                header,
+                rows,
+            })
+            .await?;
+        Ok(RowStream::new(columns, receiver))
     }
 
     /// Run a query expecting exactly one row.

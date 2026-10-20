@@ -30,6 +30,7 @@ use crate::command::Command;
 use crate::dataset::DataSet;
 use crate::error::Result;
 use crate::row::Row;
+use crate::stream::RowStream;
 use crate::transaction::Transaction;
 use crate::value::{FromSql, ToSql};
 
@@ -90,6 +91,16 @@ pub trait Executor: Sealed + Send {
         params: &[&dyn ToSql],
     ) -> impl Future<Output = Result<Vec<Row>>> + Send {
         self.as_client().query(sql, params)
+    }
+
+    /// Run a query and receive the rows of its first result set as they
+    /// arrive.
+    fn query_stream(
+        &mut self,
+        sql: &str,
+        params: &[&dyn ToSql],
+    ) -> impl Future<Output = Result<RowStream<'_>>> + Send {
+        self.as_client().query_stream(sql, params)
     }
 
     /// Run a query expecting exactly one row.

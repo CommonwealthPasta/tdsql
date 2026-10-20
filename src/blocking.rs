@@ -45,7 +45,7 @@ use crate::command::Command;
 use crate::config::Config;
 use crate::dataset::DataSet;
 use crate::error::{Error, Result};
-use crate::row::Row;
+use crate::row::{Column, Row};
 use crate::transaction::IsolationLevel;
 use crate::value::{FromSql, ToSql};
 
@@ -100,6 +100,30 @@ impl Client {
     /// Run a query and collect every row of the first result set.
     pub fn query(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<Vec<Row>> {
         self.runtime.block_on(self.inner.query(sql, params))
+    }
+
+    /// Run a query and read the rows of its first result set as the server
+    /// sends them.
+    ///
+    /// See [`tdsql::Client::query_stream`](crate::Client::query_stream).
+    ///
+    /// ```no_run
+    /// # use tdsql::blocking::Client;
+    /// # fn f(client: &mut Client) -> tdsql::Result<()> {
+    /// for row in client.query_stream("SELECT id FROM users", &[])? {
+    ///     let id: i32 = row?.get("id");
+    ///     println!("{id}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn query_stream(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<RowIter<'_>> {
+        let Self { runtime, inner } = self;
+        let rows = runtime.block_on(inner.query_stream(sql, params))?;
+        Ok(RowIter {
+            runtime,
+            inner: rows,
+        })
     }
 
     /// Run a query expecting exactly one row.
@@ -222,6 +246,17 @@ impl Transaction<'_> {
         self.runtime.block_on(self.inner.query(sql, params))
     }
 
+    /// Run a query and read the rows of its first result set as the server
+    /// sends them.
+    pub fn query_stream(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<RowIter<'_>> {
+        let Self { runtime, inner } = self;
+        let rows = runtime.block_on(inner.query_stream(sql, params))?;
+        Ok(RowIter {
+            runtime,
+            inner: rows,
+        })
+    }
+
     /// Run a query expecting exactly one row.
     pub fn query_one(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<Row> {
         self.runtime.block_on(self.inner.query_one(sql, params))
@@ -260,6 +295,41 @@ impl Transaction<'_> {
     /// Run a [`Command`] for its row count rather than its rows.
     pub fn execute_command(&mut self, command: &Command) -> Result<u64> {
         self.runtime.block_on(self.inner.execute_command(command))
+    }
+}
+
+/// The rows of a query's first result set, read as the server sends them.
+///
+/// The blocking counterpart to [`tdsql::RowStream`](crate::RowStream): an
+/// [`Iterator`] where that is a `Stream`, and it holds the connection, and is
+/// drained if dropped early, in exactly the same way.
+pub struct RowIter<'a> {
+    runtime: &'a Runtime,
+    inner: crate::RowStream<'a>,
+}
+
+impl std::fmt::Debug for RowIter<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("blocking::RowIter")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl RowIter<'_> {
+    /// The columns of the result set, known before the first row arrives.
+    ///
+    /// Empty if the statement produced no result set at all.
+    pub fn columns(&self) -> &[Column] {
+        self.inner.columns()
+    }
+}
+
+impl Iterator for RowIter<'_> {
+    type Item = Result<Row>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.runtime.block_on(self.inner.try_next()).transpose()
     }
 }
 
@@ -341,6 +411,14 @@ pub trait Executor: Sealed {
     fn query(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<Vec<Row>> {
         let (runtime, client) = self.parts();
         runtime.block_on(client.query(sql, params))
+    }
+
+    /// Run a query and read the rows of its first result set as the server
+    /// sends them.
+    fn query_stream(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<RowIter<'_>> {
+        let (runtime, client) = self.parts();
+        let inner = runtime.block_on(client.query_stream(sql, params))?;
+        Ok(RowIter { runtime, inner })
     }
 
     /// Run a query expecting exactly one row.

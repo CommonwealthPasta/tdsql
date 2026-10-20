@@ -5,6 +5,7 @@ use crate::command::Command;
 use crate::dataset::DataSet;
 use crate::error::{Error, Result};
 use crate::row::Row;
+use crate::stream::RowStream;
 use crate::value::{FromSql, ToSql};
 
 /// The isolation level a transaction runs at.
@@ -172,6 +173,16 @@ impl<'a> Transaction<'a> {
     /// Run a query and collect every row of the first result set.
     pub async fn query(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<Vec<Row>> {
         self.client.query(sql, params).await
+    }
+
+    /// Run a query and receive the rows of its first result set as they
+    /// arrive. See [`Client::query_stream`].
+    pub async fn query_stream(
+        &mut self,
+        sql: &str,
+        params: &[&dyn ToSql],
+    ) -> Result<RowStream<'_>> {
+        self.client.query_stream(sql, params).await
     }
 
     /// Run a query expecting exactly one row.

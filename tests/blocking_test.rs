@@ -229,6 +229,57 @@ fn connects_from_a_connection_string() {
     assert_eq!(n, 1);
 }
 
+#[test]
+#[ignore]
+fn streams_rows_as_an_iterator() {
+    let mut client = connect();
+    let rows = client
+        .query_stream(
+            "SELECT n FROM (VALUES (1), (2), (3)) AS v (n) ORDER BY n",
+            &[],
+        )
+        .unwrap();
+
+    assert_eq!(rows.columns()[0].name(), "n");
+    let ns: Vec<i32> = rows.map(|row| row.unwrap().get("n")).collect();
+    assert_eq!(ns, [1, 2, 3]);
+}
+
+#[test]
+#[ignore]
+fn dropping_a_row_iterator_early_leaves_the_connection_clean() {
+    let mut client = connect();
+    {
+        let mut rows = client
+            .query_stream(
+                "SELECT TOP (5000) 1 AS n FROM sys.all_columns a CROSS JOIN sys.all_columns b",
+                &[],
+            )
+            .unwrap();
+        rows.next().unwrap().unwrap();
+    }
+    let n: i32 = client.query_scalar("SELECT 42", &[]).unwrap();
+    assert_eq!(n, 42);
+}
+
+#[test]
+#[ignore]
+fn streams_through_the_blocking_executor_trait() {
+    use tdsql::blocking::Executor;
+
+    fn count(db: &mut impl Executor) -> usize {
+        db.query_stream("SELECT n FROM (VALUES (1), (2)) AS v (n)", &[])
+            .unwrap()
+            .count()
+    }
+
+    let mut client = connect();
+    assert_eq!(count(&mut client), 2);
+    let mut tx = client.transaction().unwrap();
+    assert_eq!(count(&mut tx), 2);
+    tx.rollback().unwrap();
+}
+
 /// Creating a blocking client inside an async runtime must fail cleanly rather
 /// than panic later with "Cannot start a runtime from within a runtime".
 #[tokio::test]

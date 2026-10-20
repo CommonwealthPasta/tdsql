@@ -1,10 +1,10 @@
 # tdsql
 
-`tdsql` is an ergonomic async Microsoft SQL Server client for Rust, built on the
+`tdsql` is an async Microsoft SQL Server client for Rust, built on the
 [tiberius-ng](https://github.com/MattJackson/tiberius-ng) TDS driver.
 
-Connect once, then run statements against the connection. Queries hand back rows
-directly, and values come out typed:
+You connect once and run statements on that connection. Queries return rows,
+and you read values out of them as ordinary Rust types:
 
 ```rust,no_run
 use tdsql::{Client, Config};
@@ -45,7 +45,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ## Connecting
 
-Build the configuration fluently, or parse a connection string:
+Build a `Config` in code, or parse a connection string:
 
 ```rust,no_run
 use tdsql::{Client, Config};
@@ -70,14 +70,14 @@ let mut client = Client::connect_str(
 # }
 ```
 
-`Config` also accepts a JDBC-style string via [`Config::from_jdbc_string`]. The
-password is redacted from the `Debug` output, so logging a config is safe.
+[`Config::from_jdbc_string`] parses JDBC-style strings too. A config's `Debug`
+output hides the password, so it's safe to log.
 
-One `Client` is one connection, and it is reused for every statement. Because
-TDS has no MARS, a connection carries one in-flight request at a time — for
-concurrency, use a pool such as [`bb8`](https://crates.io/crates/bb8) or
-[`deadpool`](https://crates.io/crates/deadpool) and check out a connection per
-task.
+A `Client` is one connection, reused for every statement. The driver doesn't
+support MARS, so a connection runs one request at a time. For concurrency, use a
+pool such as [`bb8`](https://crates.io/crates/bb8) or
+[`deadpool`](https://crates.io/crates/deadpool) and give each task its own
+connection.
 
 ## Queries
 
@@ -114,8 +114,8 @@ let updated = client
 
 ## Reading values
 
-`get` takes a column name or a zero-based position, and converts to the type you
-ask for:
+`get` takes a column name or a zero-based position, and converts the value to
+the type you ask for:
 
 ```rust,no_run
 # use tdsql::Row;
@@ -132,17 +132,59 @@ let note: Option<String> = row.try_get("note")?;
 # }
 ```
 
-Integers widen (a `tinyint` reads fine as `i64`) but never narrow, so a value is
-never silently truncated. Reading a `NULL` into a non-optional type is an error
-rather than a default value.
+Integers can widen but never narrow. A `tinyint` reads fine as an `i64`, and
+nothing is ever silently truncated to fit. Reading a `NULL` into a type that
+isn't an `Option` is an error.
 
-Columns keep their order, and `SELECT a, a` stays addressable by position.
+Columns keep the order the query lists them in. Even `SELECT a, a` gives you two
+separate columns, and you can reach each one by position.
+
+## Streaming large results
+
+`query` gives you nothing until the last row has arrived. `query_stream` hands
+you each row as soon as the server sends it:
+
+```rust,no_run
+# use tdsql::Client;
+# async fn f(client: &mut Client) -> tdsql::Result<()> {
+let mut rows = client
+    .query_stream("SELECT id, name FROM events WHERE day = @P1", &[&"2024-06-01"])
+    .await?;
+
+// The columns are known before the first row arrives.
+for column in rows.columns() {
+    println!("{}: {:?}", column.name(), column.sql_type());
+}
+
+while let Some(row) = rows.try_next().await? {
+    let id: i64 = row.get("id");
+    println!("{id}");
+}
+# Ok(())
+# }
+```
+
+You get the rows of the first result set, the same ones `query` would collect.
+If the server rejects the statement, the `.await` on `query_stream` fails. If
+something goes wrong partway through, the error comes out of the stream after
+the rows that made it. `RowStream` is also a `futures::Stream`, if you'd rather
+use combinators.
+
+The stream borrows the client, so nothing else can run on the connection while
+you hold it. Rows are read only a little ahead of you. A slow reader slows the
+query down, and memory use stays flat however big the result is. The query stays
+open on the server until you're done with it, and keeps any locks it has taken.
+
+You can drop the stream early. The rest of the result is read and thrown away
+before the next statement runs, so the connection stays usable. Any statements
+after the `SELECT` in the same batch still run.
+
+In the blocking client, `query_stream` returns an `Iterator`.
 
 ## Named parameters and stored procedures
 
-`Command` carries named parameters. A stored procedure is sent as a real RPC, so
-its parameters are genuinely named on the wire rather than pasted into an `EXEC`
-string:
+`Command` takes named parameters. Stored procedures are called over RPC, which
+sends each parameter by name, so nothing gets pasted into an `EXEC` string:
 
 ```rust,no_run
 # use tdsql::{Client, Command};
@@ -158,8 +200,8 @@ let affected = client.execute_command(&cmd).await?;
 # }
 ```
 
-A text batch may also use named parameters; they are rewritten to the positional
-form the protocol expects:
+Text queries can use named parameters too. They're rewritten into the
+positional form the protocol expects:
 
 ```rust,no_run
 # use tdsql::{Client, Command};
@@ -173,7 +215,7 @@ let ds = client.query_dataset(&cmd).await?;
 # }
 ```
 
-Binding `None` sends SQL `NULL`:
+To send SQL `NULL`, bind `None`:
 
 ```rust
 use tdsql::Command;
@@ -185,8 +227,9 @@ let cmd = Command::query("UPDATE users SET note = @note WHERE id = @id")
 
 ## Transactions
 
-`client.transaction()` returns a handle that scopes every statement run through
-it. Commit to keep the work; **dropping without committing rolls back.**
+`client.transaction()` starts a transaction, and everything you run through the
+handle it returns is part of it. Call `commit()` to keep the work. If you drop
+the handle without committing, the transaction rolls back.
 
 ```rust,no_run
 # use tdsql::Client;
@@ -201,8 +244,8 @@ tx.commit().await?;   // or tx.rollback().await?
 # }
 ```
 
-A transaction never commits implicitly, so an early `?` return is safe — the
-insert below is discarded, not half-applied:
+Nothing commits unless you ask it to, so returning early with `?` is safe. Here
+the second insert fails, and the first one is rolled back with it:
 
 ```rust,no_run
 # use tdsql::Client;
@@ -214,8 +257,8 @@ async fn transfer(client: &mut Client) -> tdsql::Result<()> {
 }
 ```
 
-A `&mut Transaction` can be passed around, so one unit of work can span several
-functions:
+You can pass a `&mut Transaction` to other functions, so one unit of work can
+span several of them:
 
 ```rust,no_run
 use tdsql::{Client, Transaction};
@@ -234,9 +277,9 @@ tx.commit().await?;
 # }
 ```
 
-Isolation levels and savepoints are both available. A savepoint is a nested
-transaction: rolling it back undoes only its own work and leaves the outer
-transaction open.
+You can also choose an isolation level and use savepoints. A savepoint works
+like a nested transaction. Rolling it back undoes its own work and leaves the
+outer transaction open.
 
 ```rust,no_run
 # use tdsql::{Client, IsolationLevel};
@@ -258,18 +301,17 @@ tx.commit().await?;
 
 ### How rollback-on-drop works
 
-`Drop` cannot run `async` code, so the rollback is *enqueued* rather than
-awaited — the send is synchronous and non-blocking. The connection lives in a
-background task that serves requests in order, so the rollback is guaranteed to
-reach the server before any later statement on that connection. Use
-`rollback()` explicitly when you want to observe an error from it.
+`Drop` can't run async code, so it can't wait for a rollback to finish. It
+queues one instead, which never blocks. The connection runs in a background task
+that handles requests in order, so the rollback reaches the server before
+anything else you send on that connection. If you need to know whether the
+rollback itself failed, call `rollback()` yourself.
 
 ## Writing helpers that work either way
 
-A helper written against `&mut Client` cannot be called inside a transaction,
-and one written against `&mut Transaction` cannot be called without one. The
-`Executor` trait removes the choice: take `&mut impl Executor` and the caller
-decides.
+A helper that takes `&mut Client` can't be called inside a transaction, and one
+that takes `&mut Transaction` can't be called outside one. Take
+`&mut impl Executor` instead, and it works with both:
 
 ```rust,no_run
 # use tdsql::{Client, Executor, Result, Row};
@@ -290,15 +332,12 @@ tx.commit().await?;
 # }
 ```
 
-`Executor` carries the statement methods — `query`, `query_one`, `query_opt`,
-`query_scalar`, `execute`, `batch`, `batch_dataset`, `query_dataset`,
-`execute_command` — so an existing helper becomes generic by changing only its
-signature.
+`Executor` has the same statement methods as `Client`, so you can make an
+existing helper generic by changing nothing but its signature.
 
-It also carries `transaction()`, which is the interesting one: on a `Client` it
-begins a real transaction, and on a `Transaction` it opens a *savepoint*. A
-helper that wants its own atomic scope therefore nests correctly instead of
-trying to begin a second transaction on a connection that already has one:
+It also has `transaction()`. On a `Client` that starts a transaction, and on a
+`Transaction` it opens a savepoint. So a helper can open a scope of its own
+without knowing whether it's already inside a transaction:
 
 ```rust,no_run
 # use tdsql::{Client, Executor, Result};
@@ -322,18 +361,18 @@ tx.commit().await?;
 # }
 ```
 
-The blocking client has the same trait as `tdsql::blocking::Executor`, with the
-`async`/`await` removed.
+The blocking client has its own version of the trait, `tdsql::blocking::Executor`.
 
-The trait is sealed — it describes the two types this crate provides rather
-than an extension point — and it is generics-only, not dyn-compatible, so use
-`&mut impl Executor` or `<E: Executor>` rather than `&mut dyn Executor`.
+`Executor` is sealed, so `Client` and `Transaction` are the only types that
+implement it. It isn't dyn-compatible either: write `&mut impl Executor` or
+`<E: Executor>`, not `&mut dyn Executor`.
 
 ## DDL and raw batches
 
-Parameterised statements are sent as an RPC, and some statements — `CREATE
-PROCEDURE`, `CREATE VIEW`, `CREATE TRIGGER` — must be the first statement of
-their own batch, so they cannot go that route. `batch` sends SQL verbatim:
+Parameterised statements are sent as RPC calls. Some statements, like
+`CREATE PROCEDURE`, `CREATE VIEW` and `CREATE TRIGGER`, have to come first in a
+batch of their own, so they can't be sent that way. `batch` sends SQL exactly as
+you wrote it:
 
 ```rust,no_run
 # use tdsql::Client;
@@ -345,14 +384,14 @@ client
 # }
 ```
 
-Because the SQL is sent verbatim, never interpolate untrusted input into it —
-use parameters for values.
+Since the SQL goes over untouched, never build it from untrusted input. Values
+belong in parameters.
 
 ## Multiple result sets
 
-Most commands return one result set, which is why `query` hands back a plain
-`Vec<Row>`. When a batch or procedure genuinely returns several, use
-`query_dataset` and index them in the order the server sent them:
+Most statements return a single result set, which is why `query` returns a plain
+`Vec<Row>`. When a batch or procedure returns several, use `query_dataset`.
+They come back in the order the server sent them:
 
 ```rust,no_run
 # use tdsql::{Client, Command};
@@ -372,8 +411,8 @@ let by_name = ds.table_named("table0");
 
 ## Errors
 
-Every fallible call returns [`Error`], so failures can be matched rather than
-string-compared:
+Everything that can fail returns an [`Error`], so you can match on what went
+wrong:
 
 ```rust,no_run
 use tdsql::{Client, Error};
@@ -388,16 +427,16 @@ match client.query_one("SELECT name FROM users WHERE id = @P1", &[&7i32]).await 
 # }
 ```
 
-A statement that the server rejects fails with `Error::Query`, which names what
-was running and repeats what the server said, so printing the error alone is
-enough to diagnose it:
+When the server rejects a statement, you get `Error::Query`. Its message names
+the statement and repeats what the server said, so printing it is usually all
+you need:
 
 ```text
 query failed [SELECT id FROM nope]: Invalid object name 'nope'. [error 208, state 1, severity 16, line 1]
 ```
 
-The same details are readable field by field, which is how to branch on a
-specific server error rather than on its message text:
+The same details are available as fields. Use those to handle a specific server
+error, so you never have to parse the message:
 
 ```rust,no_run
 # use tdsql::Client;
@@ -414,27 +453,28 @@ if let Err(e) = client.execute("INSERT INTO users (id) VALUES (@P1)", &[&7i32]).
 # }
 ```
 
-Parameter *values* are never captured into the message — they routinely hold
-personal data — but `parameter_count()` records how many were bound, and
-`statement_kind()` says whether the failure came from a query, a batch, a stored
-procedure, or transaction control.
+Parameter values never appear in error messages, since they often hold personal
+data. `parameter_count()` tells you how many were bound, and `statement_kind()`
+tells you whether the failure came from a query, a batch, a stored procedure or
+transaction control.
 
-`Error` is `Send + Sync + 'static`, so it also works with `anyhow`, `eyre` and
-friends via `?`.
+`Error` is `Send + Sync + 'static`, so `?` works with `anyhow`, `eyre` and
+similar crates.
 
 ## Blocking client
 
-If you are not in an async program, enable the `blocking` feature:
+If your program isn't async, turn on the `blocking` feature:
 
 ```toml
 [dependencies]
 tdsql = { version = "0.1", features = ["blocking"] }
 ```
 
-`tdsql::blocking::Client` mirrors the async client with the `async`/`await`
-removed. Everything else — typed rows, `Command`, transactions, savepoints, the
-`Executor` trait — is the same, and `Row`, `DataSet` and `Error` are the very
-same types.
+`tdsql::blocking::Client` is the async client without the `async` and `.await`.
+Typed rows, `Command`, transactions, savepoints and the `Executor` trait all work
+the same way, and `Row`, `DataSet` and `Error` are shared between the two. The
+only difference in shape is `query_stream`, which returns an `Iterator` instead
+of a `Stream`.
 
 ```rust,no_run
 use tdsql::blocking::Client;
@@ -460,11 +500,10 @@ fn main() -> tdsql::Result<()> {
 }
 ```
 
-Each blocking client owns a small runtime, so **it must not be used from inside
-an async runtime** — driving a runtime from within another one panics.
-`Client::connect` detects that case and returns `Error::BlockingInAsync` up
-front rather than letting a later call blow up. In async code, use
-`tdsql::Client` directly.
+Each blocking client runs its own small runtime, so don't use one from async
+code. Starting a runtime inside another one panics. `Client::connect` checks for
+this and returns `Error::BlockingInAsync`, so you find out when you connect, not
+on some later call. In async code, use `tdsql::Client`.
 
 ## Type mapping
 
@@ -486,14 +525,32 @@ front rather than letting a later call blow up. In async code, use
 | `datetimeoffset` | `DateTimeOffset` | `chrono::DateTime<FixedOffset>`, `DateTime<Utc>`, `DateTime<Local>` |
 | any `NULL` | `Null` | `Option<T>` |
 
-Any column reads as `DataValue` if you would rather match on it yourself.
+You can also read any column as a `DataValue` and match on it yourself.
+
+### Getting at `chrono`, `uuid` and `rust_decimal`
+
+Types from these three crates appear in the API, and they only line up with the
+exact version `tdsql` was built with. If two copies of `uuid` end up in your
+dependency tree, you get the baffling ``expected `Uuid`, found `Uuid` `` error.
+
+To save you from that, `tdsql` re-exports all three. Import them through `tdsql`
+and the versions always match:
+
+```rust
+use tdsql::chrono::Utc;
+use tdsql::uuid::Uuid;
+use tdsql::rust_decimal::Decimal;
+```
+
+You can still add them to your own `Cargo.toml`. Just keep the major versions in
+step with the ones in [`Cargo.toml`](https://github.com/CommonwealthPasta/tdsql/blob/master/Cargo.toml).
 
 ### Time zones
 
-A `chrono::DateTime<Tz>` binds directly for *any* time zone -- `Utc`, `Local`, a
-`FixedOffset`, or a named zone from `chrono-tz`. It is normalised to its UTC
-offset and sent as `datetimeoffset`, so the instant survives the round trip
-whatever zone you wrote it in:
+You can bind a `chrono::DateTime<Tz>` in any time zone: `Utc`, `Local`, a
+`FixedOffset`, or a named zone from `chrono-tz`. It's sent as a `datetimeoffset`
+with the zone's offset at that moment, so you get back the same instant you
+wrote, whatever the zone:
 
 ```rust,no_run
 use chrono::{Local, Utc};
@@ -514,29 +571,31 @@ assert_eq!(at, same_instant);
 # }
 ```
 
-Reading back into `DateTime<Utc>` or `DateTime<Local>` re-projects the offset
-the server sent, which names the same instant.
+Reading into `DateTime<Utc>` or `DateTime<Local>` converts from the offset the
+server sent, and both name the same instant.
 
-`datetime2` and friends are the exception, in *both* directions: they carry no
-offset, so calling one UTC would be a guess rather than a conversion. Those
-columns bind from and read as `NaiveDateTime`, and you attach the zone yourself
--- `naive.and_utc()` going out, `.and_utc()` on the way back in.
+`datetime2` and the other offset-free types work differently, in both
+directions. They don't store an offset, so treating one as UTC would be a
+guess. Those columns bind from and read as `NaiveDateTime`, and you handle the
+zone yourself: `.naive_utc()` on the way out, `.and_utc()` on the way back in.
 
 ### Known limitation: untyped NULLs
 
-Binding `DataValue::Null` (or `None`) sends an untyped `NULL`, which travels as a
-`NULL int`. SQL Server coerces that for most targets, but a column that needs a
-specific type may reject it. Bind a typed `Option<T>` when that matters.
+Binding `DataValue::Null` or `None` sends an untyped `NULL`, which goes over the
+wire as a `NULL int`. That's true of `None` for any `Option<T>`, because the `T`
+isn't sent. SQL Server converts a `NULL int` for most targets, but a column that
+needs a specific type may reject it.
 
 ## Examples
 
-Runnable examples live in [`examples/`](https://github.com/CommonwealthPasta/tdsql/tree/master/examples). The
-[`tests`](https://github.com/CommonwealthPasta/tdsql/tree/master/tests) directory holds integration tests that exercise the full type
-mapping against a live server.
+There are runnable examples in [`examples/`](https://github.com/CommonwealthPasta/tdsql/tree/master/examples).
+The [`tests`](https://github.com/CommonwealthPasta/tdsql/tree/master/tests)
+directory has integration tests that run the full type mapping against a live
+server.
 
 ## License
 
-MIT — see [LICENSE](https://github.com/CommonwealthPasta/tdsql/tree/master/LICENSE).
+MIT. See [LICENSE](https://github.com/CommonwealthPasta/tdsql/tree/master/LICENSE).
 
 [`Error`]: https://docs.rs/tdsql/latest/tdsql/enum.Error.html
 [`Config::from_jdbc_string`]: https://docs.rs/tdsql/latest/tdsql/struct.Config.html#method.from_jdbc_string
