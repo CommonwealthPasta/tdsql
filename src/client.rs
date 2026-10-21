@@ -2,15 +2,16 @@
 //!
 //! The connection lives in a background task that owns the driver client.
 //! [`Client`] is a handle that sends it requests over a channel and awaits the
-//! reply. That indirection buys two things: a request is always run to
-//! completion even if the caller stops awaiting it, so a dropped future cannot
-//! desync the protocol stream; and work can be *enqueued* without `await`,
-//! which is what lets [`Transaction`](crate::Transaction) roll back from
-//! `Drop`.
+//! reply. That indirection buys two things: the task, not the caller's future,
+//! reads every response -- to its end, or once the caller has gone, up to the
+//! server's acknowledgement of a cancel -- so a dropped future cannot desync
+//! the protocol stream; and work can be *enqueued* without `await`, which is
+//! what lets [`Transaction`](crate::Transaction) roll back from `Drop`.
 
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use futures::StreamExt;
 use tokio::net::TcpStream;
@@ -199,11 +200,20 @@ fn row_of(row: tiberius::Row, columns: &Arc<[Column]>) -> Result<Row> {
 }
 
 /// Collect a query stream into its result sets, in server order.
-async fn collect_query_stream(mut stream: tiberius::QueryStream<'_>) -> Result<DataSet> {
+///
+/// `None` if `abandoned` reports the caller gone partway through, in which
+/// case the rest of the response is left unread for [`cancel`].
+async fn collect_query_stream(
+    mut stream: tiberius::QueryStream<'_>,
+    abandoned: impl Fn() -> bool,
+) -> Result<Option<DataSet>> {
     let mut dataset = DataSet::new();
     let mut current: Option<(DataTable, Arc<[Column]>)> = None;
 
     while let Some(item) = stream.next().await {
+        if abandoned() {
+            return Ok(None);
+        }
         match item? {
             tiberius::QueryItem::Metadata(meta) => {
                 if let Some((table, _)) = current.take() {
@@ -226,7 +236,7 @@ async fn collect_query_stream(mut stream: tiberius::QueryStream<'_>) -> Result<D
     if let Some((table, _)) = current.take() {
         dataset.push(table);
     }
-    Ok(dataset)
+    Ok(Some(dataset))
 }
 
 fn as_tiberius_refs(values: &[DataValue]) -> Vec<&dyn tiberius::ToSql> {
@@ -298,25 +308,104 @@ enum Request {
     },
 }
 
+impl Request {
+    /// Whether the caller has stopped waiting for this request.
+    ///
+    /// Transaction control never counts as abandoned: [`Transaction`] relies
+    /// on its begin, commit and rollbacks reaching the server whatever became
+    /// of the futures that sent them.
+    fn abandoned(&self) -> bool {
+        match self {
+            Request::Query { reply, .. }
+            | Request::Batch { reply, .. }
+            | Request::ProcQuery { reply, .. } => reply.is_closed(),
+            Request::Execute { reply, .. } | Request::ProcExecute { reply, .. } => {
+                reply.is_closed()
+            }
+            Request::QueryStream { header, .. } => header.is_closed(),
+            Request::Begin { .. }
+            | Request::Commit { .. }
+            | Request::Savepoint { .. }
+            | Request::Rollback { .. }
+            | Request::RollbackTo { .. } => false,
+        }
+    }
+}
+
+/// How long the server gets to acknowledge a cancel. Past this the state of
+/// the connection is unknown, so it is closed rather than reused.
+const CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Stop the server working on a request whose caller went away partway
+/// through, and read up to its acknowledgement so the next request starts on a
+/// clean connection.
+///
+/// Only call this once a response stream has been dropped *between* items.
+/// The driver reads a token a field at a time, so a stream dropped while it
+/// was waiting for the rest of one would leave half a token behind; between
+/// items it has read whole tokens and nothing more.
+///
+/// `false` if the connection can no longer be trusted.
+async fn cancel(driver: &mut Driver) -> bool {
+    matches!(
+        tokio::time::timeout(CANCEL_TIMEOUT, driver.cancel_query()).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Hand a request's result to its caller, or cancel the rest of the request
+/// if the caller went away partway through (`Ok(None)`).
+///
+/// `false` if the connection can no longer be trusted.
+async fn finish<T>(driver: &mut Driver, result: Result<Option<T>>, reply: Reply<T>) -> bool {
+    match result.transpose() {
+        Some(result) => {
+            let _ = reply.send(result);
+            true
+        }
+        None => cancel(driver).await,
+    }
+}
+
 /// Own the driver and serve requests until every handle is gone.
 ///
 /// Requests are served strictly in order, which is also what TDS requires:
 /// there is no MARS, so a connection carries one in-flight request at a time.
+///
+/// A request whose caller has gone is cancelled: skipped if it has not been
+/// sent yet, or stopped between items of its response if it has. If the
+/// server does not acknowledge a cancel, the task ends and takes the
+/// connection with it, so every request still queued, and every later one,
+/// fails with [`Error::ConnectionClosed`].
 async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Request>) {
     while let Some(request) = rx.recv().await {
+        // Not sent yet, so cancelling it is as simple as not sending it.
+        if request.abandoned() {
+            continue;
+        }
         match request {
             Request::Query { sql, params, reply } => {
-                let result = run_query(&mut driver, &sql, &params)
+                let result = run_query(&mut driver, &sql, &params, || reply.is_closed())
                     .await
                     .map_err(|e| e.with_statement(StatementKind::Query, &sql, params.len()));
-                let _ = reply.send(result);
+                if !finish(&mut driver, result, reply).await {
+                    return;
+                }
             }
             Request::QueryStream {
                 sql,
                 params,
                 header,
                 rows,
-            } => stream_query(&mut driver, &sql, &params, header, rows).await,
+            } => {
+                let abandoned = stream_query(&mut driver, &sql, &params, header, rows).await;
+                if abandoned && !cancel(&mut driver).await {
+                    return;
+                }
+            }
+            // The driver reads an `execute` response in one call, with no point
+            // between items to stop at, so once sent it runs to completion
+            // whether or not anyone is still waiting.
             Request::Execute { sql, params, reply } => {
                 let refs = as_tiberius_refs(&params);
                 let result = driver
@@ -331,11 +420,13 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
             }
             Request::Batch { sql, reply } => {
                 let result = match driver.simple_query(&sql).await {
-                    Ok(stream) => collect_query_stream(stream).await,
+                    Ok(stream) => collect_query_stream(stream, || reply.is_closed()).await,
                     Err(e) => Err(Error::from(e)),
-                };
-                let _ =
-                    reply.send(result.map_err(|e| e.with_statement(StatementKind::Batch, &sql, 0)));
+                }
+                .map_err(|e| e.with_statement(StatementKind::Batch, &sql, 0));
+                if !finish(&mut driver, result, reply).await {
+                    return;
+                }
             }
             Request::ProcQuery {
                 name,
@@ -343,10 +434,12 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 reply,
             } => {
                 let count = params.len();
-                let result = run_proc_query(&mut driver, &name, params)
+                let result = run_proc_query(&mut driver, &name, params, || reply.is_closed())
                     .await
                     .map_err(|e| e.with_statement(StatementKind::StoredProcedure, &name, count));
-                let _ = reply.send(result);
+                if !finish(&mut driver, result, reply).await {
+                    return;
+                }
             }
             Request::ProcExecute {
                 name,
@@ -354,10 +447,12 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 reply,
             } => {
                 let count = params.len();
-                let result = run_proc_execute(&mut driver, &name, params)
+                let result = run_proc_execute(&mut driver, &name, params, || reply.is_closed())
                     .await
                     .map_err(|e| e.with_statement(StatementKind::StoredProcedure, &name, count));
-                let _ = reply.send(result);
+                if !finish(&mut driver, result, reply).await {
+                    return;
+                }
             }
             Request::Begin { level, reply } => {
                 let result = driver
@@ -391,7 +486,8 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 // Validation guarantees the name cannot contain `]`.
                 let sql = format!("SAVE TRANSACTION [{name}]");
                 let result = match driver.simple_query(&sql).await {
-                    Ok(stream) => collect_query_stream(stream).await.map(|_| ()),
+                    // Transaction control is never cancelled; see `abandoned`.
+                    Ok(stream) => collect_query_stream(stream, || false).await.map(|_| ()),
                     Err(e) => Err(Error::from(e)),
                 };
                 let _ = reply.send(
@@ -421,7 +517,7 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 // before it ever reaches here.
                 let sql = format!("ROLLBACK TRANSACTION [{name}]");
                 let result = match driver.simple_query(&sql).await {
-                    Ok(stream) => collect_query_stream(stream).await.map(|_| ()),
+                    Ok(stream) => collect_query_stream(stream, || false).await.map(|_| ()),
                     Err(e) => Err(Error::from(e)),
                 }
                 .map_err(|e| e.with_statement(StatementKind::TransactionControl, &sql, 0));
@@ -436,10 +532,16 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
     let _ = driver.close().await;
 }
 
-async fn run_query(driver: &mut Driver, sql: &str, params: &[DataValue]) -> Result<DataSet> {
+/// `None` if the caller went away partway through; see [`collect_query_stream`].
+async fn run_query(
+    driver: &mut Driver,
+    sql: &str,
+    params: &[DataValue],
+    abandoned: impl Fn() -> bool,
+) -> Result<Option<DataSet>> {
     let refs = as_tiberius_refs(params);
     let stream = driver.query(sql, &refs).await?;
-    collect_query_stream(stream).await
+    collect_query_stream(stream, abandoned).await
 }
 
 /// How many rows the connection task may read ahead of a [`RowStream`]'s
@@ -455,17 +557,19 @@ const STREAM_BUFFER: usize = 64;
 /// if the statement failed before producing one. Everything after that goes to
 /// `rows`, which always ends with [`Streamed::End`] or an error.
 ///
-/// Like every other request, this one is read to the end however the consumer
-/// behaves: one that hangs up early only stops rows being forwarded. Later
-/// result sets are read and dropped too, but an error in one still fails the
+/// Later result sets are read and dropped, but an error in one still fails the
 /// stream, just as it fails `query`.
+///
+/// Returns `true` if the consumer went away partway through -- dropped the
+/// [`RowStream`], or the `query_stream` call before it returned -- leaving the
+/// rest of the response unread for [`cancel`].
 async fn stream_query(
     driver: &mut Driver,
     sql: &str,
     params: &[DataValue],
     header: Reply<Arc<[Column]>>,
     rows: mpsc::Sender<Result<Streamed>>,
-) {
+) -> bool {
     let mut header = Some(header);
     let mut columns: Arc<[Column]> = Arc::from(Vec::new());
     // False once the first result set is over or the consumer has gone.
@@ -473,12 +577,21 @@ async fn stream_query(
     // The first failure, held back until the response has been fully read so
     // the connection is clean for the next request.
     let mut failure: Option<Error> = None;
+    // The consumer holds `header`'s receiver until the columns arrive, and
+    // `rows`' after.
+    let gone = |header: &Option<Reply<Arc<[Column]>>>| match header {
+        Some(header) => header.is_closed(),
+        None => rows.is_closed(),
+    };
 
     let refs = as_tiberius_refs(params);
     match driver.query(sql, &refs).await {
         Err(e) => failure = Some(e.into()),
         Ok(mut stream) => {
             while let Some(item) = stream.next().await {
+                if gone(&header) {
+                    return true;
+                }
                 match item {
                     Ok(tiberius::QueryItem::Metadata(meta)) => match header.take() {
                         Some(header) => {
@@ -530,6 +643,7 @@ async fn stream_query(
             let _ = rows.send(last).await;
         }
     }
+    false
 }
 
 fn build_proc<'a>(name: &str, params: Vec<(String, DataValue)>) -> tiberius::Command<'a> {
@@ -540,17 +654,22 @@ fn build_proc<'a>(name: &str, params: Vec<(String, DataValue)>) -> tiberius::Com
     cmd
 }
 
+/// `None` if the caller went away partway through; see [`collect_query_stream`].
 async fn run_proc_query(
     driver: &mut Driver,
     name: &str,
     params: Vec<(String, DataValue)>,
-) -> Result<DataSet> {
+    abandoned: impl Fn() -> bool,
+) -> Result<Option<DataSet>> {
     let mut stream = build_proc(name, params).exec(driver).await?;
 
     let mut dataset = DataSet::new();
     let mut current: Option<(DataTable, Arc<[Column]>)> = None;
 
     while let Some(item) = stream.next().await {
+        if abandoned() {
+            return Ok(None);
+        }
         match item? {
             tiberius::CommandItem::Metadata(meta) => {
                 if let Some((table, _)) = current.take() {
@@ -574,22 +693,27 @@ async fn run_proc_query(
     if let Some((table, _)) = current.take() {
         dataset.push(table);
     }
-    Ok(dataset)
+    Ok(Some(dataset))
 }
 
+/// `None` if the caller went away partway through; see [`collect_query_stream`].
 async fn run_proc_execute(
     driver: &mut Driver,
     name: &str,
     params: Vec<(String, DataValue)>,
-) -> Result<u64> {
+    abandoned: impl Fn() -> bool,
+) -> Result<Option<u64>> {
     let mut stream = build_proc(name, params).exec(driver).await?;
     let mut total = 0u64;
     while let Some(item) = stream.next().await {
+        if abandoned() {
+            return Ok(None);
+        }
         if let tiberius::CommandItem::RowsAffected(n) = item? {
             total += n;
         }
     }
-    Ok(total)
+    Ok(Some(total))
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +744,31 @@ async fn run_proc_execute(
 /// # Ok(())
 /// # }
 /// ```
+///
+/// # Cancelling
+///
+/// Stop waiting for a request -- drop its future, let a `timeout` or
+/// `select!` give up on it, abort the task running it, drop a [`RowStream`]
+/// early -- and it is cancelled on the server too, so it stops holding the
+/// connection, the server's time and any locks it has taken. The connection
+/// stays usable. A request still queued behind another never runs; one
+/// already running is stopped at the next row or result set to arrive, and
+/// the statements after it in the same batch don't run.
+///
+/// Two things can't be stopped partway:
+///
+/// - A statement that hasn't sent anything back yet -- still sorting,
+///   aggregating or waiting on a lock -- runs until it does, and is cancelled
+///   then.
+/// - [`execute`](Self::execute), and [`execute_command`](Self::execute_command)
+///   with a text command: the driver reads their whole response in one go, so
+///   once sent they run to completion.
+///
+/// Transaction control -- begin, commit, rollback, savepoints -- always runs,
+/// whatever became of its future. And cancelling stops a statement, not the
+/// transaction around it: work finished before the cancel stays done, as it
+/// would if the statement had failed, so put statements that must stand or
+/// fall together in a [`Transaction`].
 pub struct Client {
     tx: mpsc::UnboundedSender<Request>,
     savepoints: AtomicU64,

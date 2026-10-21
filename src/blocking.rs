@@ -301,8 +301,8 @@ impl Transaction<'_> {
 /// The rows of a query's first result set, read as the server sends them.
 ///
 /// The blocking counterpart to [`tdsql::RowStream`](crate::RowStream): an
-/// [`Iterator`] where that is a `Stream`, and it holds the connection, and is
-/// drained if dropped early, in exactly the same way.
+/// [`Iterator`] where that is a `Stream`, and it holds the connection, and
+/// cancels its query if dropped early, in exactly the same way.
 pub struct RowIter<'a> {
     runtime: &'a Runtime,
     inner: crate::RowStream<'a>,

@@ -184,33 +184,6 @@ async fn dropping_early_leaves_the_connection_clean() {
 
 #[tokio::test]
 #[ignore]
-async fn dropping_early_still_runs_the_rest_of_the_batch() {
-    let mut client = connect().await;
-    client
-        .batch("CREATE TABLE #tdsql_stream_after (id INT)")
-        .await
-        .unwrap();
-
-    let mut rows = client
-        .query_stream(
-            &format!("{NUMBERS}; INSERT INTO #tdsql_stream_after (id) VALUES (7)"),
-            &[&5000i32],
-        )
-        .await
-        .unwrap();
-    rows.try_next().await.unwrap().unwrap();
-    drop(rows);
-
-    let ids = client
-        .query("SELECT id FROM #tdsql_stream_after", &[])
-        .await
-        .unwrap();
-    assert_eq!(ids.len(), 1);
-    assert_eq!(ids[0].get::<i32, _>("id"), 7);
-}
-
-#[tokio::test]
-#[ignore]
 async fn a_slow_consumer_still_gets_every_row() {
     let mut client = connect().await;
     // Comfortably more than the read-ahead, so the connection task has to

@@ -44,3 +44,9 @@ tdsql = { path = ".", features = ["blocking"] }
 [[example]]
 name = "blocking"
 required-features = ["blocking"]
+
+# Cancelling a query needs the fork's `cancel_query` fix, until upstream
+# releases it. `[patch]` only applies when tdsql is the root crate, so
+# applications built on tdsql need this section too.
+[patch.crates-io]
+tiberius-ng = { git = "https://github.com/CommonwealthPasta/tiberius-ng", rev = "f6c15bb2ff110288bc32ed766ece2370e04d9241" }

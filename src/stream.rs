@@ -62,10 +62,11 @@ pub(crate) enum Streamed {
 ///
 /// # Dropping early
 ///
-/// Dropping the stream before the end stops rows being handed over, but the
-/// rest of the response is still read and discarded before the next statement
-/// runs, just as every other request in this crate runs to completion. Any
-/// statements after the `SELECT` in the same batch still execute.
+/// Dropping the stream before the end cancels the query on the server, and
+/// the connection is ready for the next statement as soon as the server has
+/// confirmed. Statements after the `SELECT` in the same batch don't run. See
+/// [Cancelling](crate::Client#cancelling) for what can and can't be stopped
+/// partway.
 pub struct RowStream<'a> {
     columns: Arc<[Column]>,
     rows: mpsc::Receiver<Result<Streamed>>,

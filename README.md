@@ -175,11 +175,53 @@ you hold it. Rows are read only a little ahead of you. A slow reader slows the
 query down, and memory use stays flat however big the result is. The query stays
 open on the server until you're done with it, and keeps any locks it has taken.
 
-You can drop the stream early. The rest of the result is read and thrown away
-before the next statement runs, so the connection stays usable. Any statements
-after the `SELECT` in the same batch still run.
+You can drop the stream early. That cancels the query on the server, and the
+connection is ready for the next statement as soon as the server has confirmed.
+Statements after the `SELECT` in the same batch don't run.
 
 In the blocking client, `query_stream` returns an `Iterator`.
+
+## Cancelling
+
+Stop waiting for a request and it's cancelled on the server too. Drop its
+future, let `tokio::time::timeout` or `select!` give up on it, abort the task
+running it, or drop a stream early. The server stops working on it and lets go
+of any locks it took, and the connection stays usable:
+
+```rust,no_run
+# use std::time::Duration;
+# use tdsql::Client;
+# async fn f(client: &mut Client) -> tdsql::Result<()> {
+let report = tokio::time::timeout(
+    Duration::from_secs(5),
+    client.query("SELECT region, SUM(total) FROM orders GROUP BY region", &[]),
+)
+.await;
+
+if report.is_err() {
+    // Timed out and cancelled, so this runs straight away rather than
+    // queueing behind the abandoned query.
+    let count: i32 = client.query_scalar("SELECT COUNT(*) FROM orders", &[]).await?;
+    println!("{count} orders; the report timed out");
+}
+# Ok(())
+# }
+```
+
+A request still waiting its turn behind another never runs. One that's running
+stops at the next row or result set to come back. Two things can't be stopped
+partway:
+
+- A statement that hasn't sent anything back yet, because it's still sorting,
+  aggregating or waiting on a lock, runs until it does and is cancelled then.
+- `execute`, and `execute_command` with a text command, run to completion once
+  sent, because the driver reads their whole response in one go.
+
+Transaction control (begin, commit, rollback, savepoints) always runs, whatever
+became of its future. Cancelling stops a statement, not the transaction around
+it: work that finished before the cancel stays done, just as it would if the
+statement had failed. Put statements that must stand or fall together in a
+transaction.
 
 ## Named parameters and stored procedures
 

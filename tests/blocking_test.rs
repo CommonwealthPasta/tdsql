@@ -264,6 +264,32 @@ fn dropping_a_row_iterator_early_leaves_the_connection_clean() {
 
 #[test]
 #[ignore]
+fn dropping_a_row_iterator_early_cancels_its_query() {
+    let mut client = connect();
+    let started = std::time::Instant::now();
+    {
+        // Minutes' worth of rows if it were read to the end instead.
+        let mut rows = client
+            .query_stream(
+                "SELECT TOP (1000000000) 1 AS n \
+                 FROM sys.all_columns a CROSS JOIN sys.all_columns b CROSS JOIN sys.all_columns c",
+                &[],
+            )
+            .unwrap();
+        rows.next().unwrap().unwrap();
+    }
+    let n: i32 = client.query_scalar("SELECT 42", &[]).unwrap();
+    assert_eq!(n, 42);
+
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(10),
+        "the abandoned query held the connection for {took:?}"
+    );
+}
+
+#[test]
+#[ignore]
 fn streams_through_the_blocking_executor_trait() {
     use tdsql::blocking::Executor;
 
