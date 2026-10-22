@@ -73,6 +73,10 @@ let mut client = Client::connect_str(
 [`Config::from_jdbc_string`] parses JDBC-style strings too. A config's `Debug`
 output hides the password, so it's safe to log.
 
+Connecting gives up after 15 seconds unless the config says otherwise: use
+`Config::connect_timeout`, or `Connect Timeout` in a connection string, where 0
+means no limit.
+
 A `Client` is one connection, reused for every statement. The driver doesn't
 support MARS, so a connection runs one request at a time. For concurrency, use a
 pool such as [`bb8`](https://crates.io/crates/bb8) or

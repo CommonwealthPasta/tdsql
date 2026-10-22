@@ -399,6 +399,13 @@ async fn serve<T>(
     }
 }
 
+/// Opens a connection to the server `cfg` names.
+async fn open(cfg: tiberius::Config) -> tiberius::Result<Driver> {
+    let tcp = TcpStream::connect(cfg.get_addr()).await?;
+    tcp.set_nodelay(true)?;
+    tiberius::Client::connect(cfg, tcp.compat_write()).await
+}
+
 /// Own the driver and serve requests until every handle is gone.
 ///
 /// Requests are served strictly in order, which is also what TDS requires:
@@ -804,17 +811,27 @@ impl std::fmt::Debug for Client {
 
 impl Client {
     /// Connect using this configuration.
+    ///
+    /// Gives up after the configuration's connect timeout, 15 seconds unless
+    /// set.
     pub async fn connect(config: &Config) -> Result<Self> {
         let cfg = config.to_tiberius()?;
-        let addr = cfg.get_addr();
-        let tcp = TcpStream::connect(&addr).await?;
-        tcp.set_nodelay(true)?;
-        let driver = tiberius::Client::connect(cfg, tcp.compat_write())
-            .await
-            .map_err(|e| Error::Connect {
-                server: addr,
-                source: Box::new(e),
-            })?;
+        let server = cfg.get_addr();
+        let limit = cfg.connect_timeout();
+        let open = open(cfg);
+        let opened = match limit {
+            Some(limit) => tokio::time::timeout(limit, open).await.unwrap_or_else(|_| {
+                Err(tiberius::error::Error::Io {
+                    kind: std::io::ErrorKind::TimedOut,
+                    message: format!("no connection within {limit:?}"),
+                })
+            }),
+            None => open.await,
+        };
+        let driver = opened.map_err(|e| Error::Connect {
+            server,
+            source: Box::new(e),
+        })?;
 
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(connection_task(driver, rx));

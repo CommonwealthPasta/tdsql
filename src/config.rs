@@ -1,6 +1,11 @@
 //! Connection configuration.
 
+use std::time::Duration;
+
 use crate::error::{Error, Result};
+
+/// SqlClient's default `Connect Timeout`.
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, PartialEq, Eq)]
 enum Source {
@@ -12,6 +17,7 @@ enum Source {
         password: String,
         trust_cert: bool,
         application_name: Option<String>,
+        connect_timeout: Option<Duration>,
     },
     /// An ADO.NET-style connection string, parsed by the driver on connect.
     Ado(String),
@@ -66,6 +72,7 @@ impl Config {
                 password: String::new(),
                 trust_cert: false,
                 application_name: None,
+                connect_timeout: Some(DEFAULT_CONNECT_TIMEOUT),
             },
         }
     }
@@ -135,6 +142,19 @@ impl Config {
         self
     }
 
+    /// How long [`Client::connect`](crate::Client::connect) may take, from
+    /// the TCP connect through the login: 15 seconds unless set, `None` for
+    /// no limit. A connection string sets it with `Connect Timeout`.
+    pub fn connect_timeout(mut self, timeout: Option<Duration>) -> Self {
+        if let Source::Parts {
+            connect_timeout: t, ..
+        } = &mut self.source
+        {
+            *t = timeout;
+        }
+        self
+    }
+
     /// Set the application name reported to the server.
     pub fn application_name(mut self, name: impl Into<String>) -> Self {
         if let Source::Parts {
@@ -162,8 +182,10 @@ impl Config {
                 password,
                 trust_cert,
                 application_name,
+                connect_timeout,
             } => {
                 let mut cfg = tiberius::Config::new();
+                cfg.set_connect_timeout(*connect_timeout);
                 cfg.host(host);
                 cfg.port(*port);
                 if let Some(db) = database {
