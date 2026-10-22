@@ -570,13 +570,9 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 }
             }
             Request::Savepoint { name, reply } => {
-                // Not `driver.save_transaction`: tds-driver 0.1.0 encodes the
-                // TM_SAVE_XACT name length as a count of UTF-16 code units
-                // where the server reads a byte count, so any non-empty name is
-                // rejected ("odd length N" / "TM request is longer than
-                // expected"). T-SQL is the documented alternative and is what
-                // the matching rollback already uses. The name is validated as
-                // an identifier before it reaches here.
+                // T-SQL, as the matching rollback uses, which the driver has no
+                // call for. The name is validated as an identifier before it
+                // reaches here.
                 // Bracket-quoted so reserved words (`inner`, `key`, ...) work.
                 // Validation guarantees the name cannot contain `]`.
                 let sql = format!("SAVE TRANSACTION [{name}]");
