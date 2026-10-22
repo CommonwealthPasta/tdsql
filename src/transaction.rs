@@ -12,7 +12,8 @@ use crate::value::{FromSql, ToSql};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum IsolationLevel {
-    /// Whatever the server is configured to default to.
+    /// The connection's current level: `READ COMMITTED`, unless
+    /// `SET TRANSACTION ISOLATION LEVEL` changed it.
     #[default]
     Unspecified,
     /// `READ UNCOMMITTED` — dirty reads allowed.

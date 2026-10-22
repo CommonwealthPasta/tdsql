@@ -51,6 +51,31 @@ async fn drop_table(client: &mut Client, name: &str) {
         .unwrap();
 }
 
+/// `sys.dm_exec_sessions.transaction_isolation_level` for READ COMMITTED.
+const READ_COMMITTED: i16 = 2;
+
+#[tokio::test]
+#[ignore]
+async fn a_level_set_outside_tdsql_does_not_leak_into_transaction() {
+    let mut client = connect().await;
+    client
+        .batch("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+        .await
+        .unwrap();
+
+    let mut tx = client.transaction().await.unwrap();
+    let inside: i16 = tx
+        .query_scalar(
+            "SELECT transaction_isolation_level FROM sys.dm_exec_sessions \
+             WHERE session_id = @@SPID",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(inside, READ_COMMITTED);
+    tx.commit().await.unwrap();
+}
+
 #[tokio::test]
 #[ignore]
 async fn commit_persists_the_work() {

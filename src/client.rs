@@ -1051,7 +1051,8 @@ impl Client {
             .await
     }
 
-    /// Begin a transaction at the server's default isolation level.
+    /// Begin a transaction at `READ COMMITTED`, SQL Server's default isolation
+    /// level.
     ///
     /// The returned [`Transaction`] borrows this client, so nothing else can
     /// use the connection until it is committed, rolled back, or dropped.
@@ -1066,7 +1067,9 @@ impl Client {
     /// # }
     /// ```
     pub async fn transaction(&mut self) -> Result<Transaction<'_>> {
-        Transaction::begin(self, IsolationLevel::Unspecified).await
+        // Not `Unspecified`, which would keep whatever level the connection
+        // was left at.
+        Transaction::begin(self, IsolationLevel::ReadCommitted).await
     }
 
     /// Begin a transaction at an explicit isolation level.

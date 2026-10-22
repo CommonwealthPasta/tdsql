@@ -168,7 +168,8 @@ impl Client {
         self.runtime.block_on(self.inner.execute_command(command))
     }
 
-    /// Begin a transaction at the server's default isolation level.
+    /// Begin a transaction at `READ COMMITTED`, SQL Server's default isolation
+    /// level.
     ///
     /// ```no_run
     /// # use tdsql::blocking::Client;
@@ -180,7 +181,7 @@ impl Client {
     /// # }
     /// ```
     pub fn transaction(&mut self) -> Result<Transaction<'_>> {
-        self.transaction_with_isolation(IsolationLevel::Unspecified)
+        self.transaction_with_isolation(IsolationLevel::ReadCommitted)
     }
 
     /// Begin a transaction at an explicit isolation level.
