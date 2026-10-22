@@ -249,7 +249,7 @@ async fn collect_query_stream(mut stream: tds_driver::QueryStream<'_>) -> Result
     Ok(dataset)
 }
 
-fn as_tiberius_refs(values: &[DataValue]) -> Vec<&dyn tds_driver::ToSql> {
+fn as_driver_refs(values: &[DataValue]) -> Vec<&dyn tds_driver::ToSql> {
     values.iter().map(|v| v as &dyn tds_driver::ToSql).collect()
 }
 
@@ -483,7 +483,7 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
             }
             Request::Execute { sql, params, reply } => {
                 let work = async |driver: &mut Driver| {
-                    let refs = as_tiberius_refs(&params);
+                    let refs = as_driver_refs(&params);
                     driver
                         .execute(&sql, &refs)
                         .await
@@ -630,7 +630,7 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
 }
 
 async fn run_query(driver: &mut Driver, sql: &str, params: &[DataValue]) -> Result<DataSet> {
-    let refs = as_tiberius_refs(params);
+    let refs = as_driver_refs(params);
     let stream = driver.query(sql, &refs).await?;
     collect_query_stream(stream).await
 }
@@ -665,7 +665,7 @@ async fn stream_query(
     // the connection is clean for the next request.
     let mut failure: Option<Error> = None;
 
-    let refs = as_tiberius_refs(params);
+    let refs = as_driver_refs(params);
     match driver.query(sql, &refs).await {
         Err(e) => failure = Some(e.into()),
         Ok(mut stream) => {
@@ -863,7 +863,7 @@ impl Client {
     /// through SQL Server Browser, and a redirect to another server, as Azure
     /// SQL's gateway sends, is followed.
     pub async fn connect(config: &Config) -> Result<Self> {
-        let cfg = config.to_tiberius()?;
+        let cfg = config.to_driver()?;
         let server = cfg.get_addr();
         let limit = cfg.connect_timeout();
         let open = open(cfg);

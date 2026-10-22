@@ -168,7 +168,7 @@ impl Config {
     }
 
     /// Build the driver configuration.
-    pub(crate) fn to_tiberius(&self) -> Result<tds_driver::Config> {
+    pub(crate) fn to_driver(&self) -> Result<tds_driver::Config> {
         match &self.source {
             Source::Ado(s) => tds_driver::Config::from_ado_string(s)
                 .map_err(|e| Error::Config(format!("invalid ADO connection string: {e}"))),
@@ -295,17 +295,17 @@ mod tests {
     }
 
     #[test]
-    fn builds_tiberius_config_from_parts() {
+    fn builds_driver_config_from_parts() {
         let cfg = Config::new()
             .host("localhost")
             .auth("sa", "pw")
             .trust_cert();
-        assert!(cfg.to_tiberius().is_ok());
+        assert!(cfg.to_driver().is_ok());
     }
 
     #[test]
     fn rejects_malformed_ado_string() {
         let cfg = Config::from_ado_string("this is not a connection string");
-        assert!(matches!(cfg.to_tiberius(), Err(Error::Config(_))));
+        assert!(matches!(cfg.to_driver(), Err(Error::Config(_))));
     }
 }
