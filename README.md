@@ -39,7 +39,7 @@ async fn main() -> tdsql::Result<()> {
 
 ```toml
 [dependencies]
-tdsql = "0.5.0"
+tdsql = "0.7.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -510,7 +510,7 @@ If your program isn't async, turn on the `blocking` feature:
 
 ```toml
 [dependencies]
-tdsql = { version = "0.5.0", features = ["blocking"] }
+tdsql = { version = "0.7.0", features = ["blocking"] }
 ```
 
 `tdsql::blocking::Client` is the async client without the `async` and `.await`.
