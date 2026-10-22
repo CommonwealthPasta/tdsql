@@ -45,8 +45,9 @@ tdsql = { path = ".", features = ["blocking"] }
 name = "blocking"
 required-features = ["blocking"]
 
-# Cancelling a query needs the fork's `cancel_query` fix, until upstream
-# releases it. `[patch]` only applies when tdsql is the root crate, so
-# applications built on tdsql need this section too.
+# The fork's fixes and additions (`CancelHandle`, `Config::connect_timeout`, the
+# read and transaction-state fixes) until upstream releases them. `[patch]` only
+# applies when tdsql is the root crate, so applications built on tdsql need this
+# section too.
 [patch.crates-io]
-tiberius-ng = { git = "https://github.com/CommonwealthPasta/tiberius-ng", rev = "f6c15bb2ff110288bc32ed766ece2370e04d9241" }
+tiberius-ng = { git = "https://github.com/CommonwealthPasta/tiberius-ng", rev = "7b2b769413c5cdcc0cf8bc1a80dd2282280c64c0" }
