@@ -24,7 +24,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-tiberius = { package = "tiberius-ng", version = "0.13.1", default-features = false, features = ["native-tls", "tds73", "tds80", "chrono", "rust_decimal", "sql-browser-tokio"] }
+tds-driver = { version = "0.1.0", default-features = false, features = ["native-tls", "tds73", "tds80", "chrono", "rust_decimal", "sql-browser-tokio"] }
 thiserror = "2.0.20"
 futures = "0.3.34"
 chrono = { version = "0.4.45", features = ["clock"] }
@@ -45,9 +45,7 @@ tdsql = { path = ".", features = ["blocking"] }
 name = "blocking"
 required-features = ["blocking"]
 
-# The fork's fixes and additions (`CancelHandle`, `Config::connect_timeout`, the
-# read and transaction-state fixes) until upstream releases them. `[patch]` only
-# applies when tdsql is the root crate, so applications built on tdsql need this
-# section too.
+# tds-driver from git until 0.1.0 is on crates.io. `[patch]` only applies when
+# tdsql is the root crate, so applications built on tdsql need this section too.
 [patch.crates-io]
-tiberius-ng = { git = "https://github.com/CommonwealthPasta/tiberius-ng", rev = "7b2b769413c5cdcc0cf8bc1a80dd2282280c64c0" }
+tds-driver = { git = "https://github.com/CommonwealthPasta/tds-driver", rev = "7a19364d2f186f23e878ef98c3c5eadc1b70ff86" }

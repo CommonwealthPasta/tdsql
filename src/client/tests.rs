@@ -1,5 +1,5 @@
 use super::*;
-use tiberius::ColumnData as C;
+use tds_driver::ColumnData as C;
 
 #[test]
 fn maps_primitive_columns() {
@@ -62,7 +62,7 @@ fn round_trips_a_value_through_binding() {
         DataValue::Text("hi".into()),
         DataValue::Binary(vec![1, 2, 3]),
     ] {
-        let bound = tiberius::ToSql::to_sql(&value);
+        let bound = tds_driver::ToSql::to_sql(&value);
         let read = map_column_data(bound, "c").unwrap();
         assert_eq!(read, value, "round-trip changed {value:?}");
     }
@@ -76,8 +76,8 @@ fn owned_binding_matches_borrowed_binding() {
         DataValue::Binary(vec![1, 2]),
         DataValue::Null,
     ] {
-        let borrowed = map_column_data(tiberius::ToSql::to_sql(&value), "c").unwrap();
-        let owned = map_column_data(tiberius::IntoSql::into_sql(value.clone()), "c").unwrap();
+        let borrowed = map_column_data(tds_driver::ToSql::to_sql(&value), "c").unwrap();
+        let owned = map_column_data(tds_driver::IntoSql::into_sql(value.clone()), "c").unwrap();
         assert_eq!(borrowed, owned, "binding paths disagree for {value:?}");
     }
 }
@@ -99,7 +99,7 @@ fn converts_positional_params_to_values() {
 fn null_binds_as_an_untyped_int() {
     // Documented limitation: an untyped NULL goes out as a NULL int.
     assert!(matches!(
-        tiberius::ToSql::to_sql(&DataValue::Null),
+        tds_driver::ToSql::to_sql(&DataValue::Null),
         C::I32(None)
     ));
 }

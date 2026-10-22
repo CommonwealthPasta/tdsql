@@ -116,9 +116,9 @@ pub enum SqlType {
     Variant,
 }
 
-impl From<tiberius::ColumnType> for SqlType {
-    fn from(t: tiberius::ColumnType) -> Self {
-        use tiberius::ColumnType as C;
+impl From<tds_driver::ColumnType> for SqlType {
+    fn from(t: tds_driver::ColumnType) -> Self {
+        use tds_driver::ColumnType as C;
         match t {
             C::Null => SqlType::Null,
             C::Bit => SqlType::Bit,

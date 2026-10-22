@@ -28,15 +28,15 @@ pub enum IsolationLevel {
     Snapshot,
 }
 
-impl From<IsolationLevel> for tiberius::IsolationLevel {
+impl From<IsolationLevel> for tds_driver::IsolationLevel {
     fn from(level: IsolationLevel) -> Self {
         match level {
-            IsolationLevel::Unspecified => tiberius::IsolationLevel::Unspecified,
-            IsolationLevel::ReadUncommitted => tiberius::IsolationLevel::ReadUncommitted,
-            IsolationLevel::ReadCommitted => tiberius::IsolationLevel::ReadCommitted,
-            IsolationLevel::RepeatableRead => tiberius::IsolationLevel::RepeatableRead,
-            IsolationLevel::Serializable => tiberius::IsolationLevel::Serializable,
-            IsolationLevel::Snapshot => tiberius::IsolationLevel::Snapshot,
+            IsolationLevel::Unspecified => tds_driver::IsolationLevel::Unspecified,
+            IsolationLevel::ReadUncommitted => tds_driver::IsolationLevel::ReadUncommitted,
+            IsolationLevel::ReadCommitted => tds_driver::IsolationLevel::ReadCommitted,
+            IsolationLevel::RepeatableRead => tds_driver::IsolationLevel::RepeatableRead,
+            IsolationLevel::Serializable => tds_driver::IsolationLevel::Serializable,
+            IsolationLevel::Snapshot => tds_driver::IsolationLevel::Snapshot,
         }
     }
 }
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn maps_isolation_levels() {
-        use tiberius::IsolationLevel as T;
+        use tds_driver::IsolationLevel as T;
         assert_eq!(T::from(IsolationLevel::Unspecified), T::Unspecified);
         assert_eq!(T::from(IsolationLevel::ReadCommitted), T::ReadCommitted);
         assert_eq!(T::from(IsolationLevel::Serializable), T::Serializable);

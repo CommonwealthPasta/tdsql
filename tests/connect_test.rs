@@ -38,7 +38,7 @@ async fn assert_times_out(config: Config, limit: Duration) {
         Error::Connect { source, .. } => assert!(
             matches!(
                 **source,
-                tiberius::error::Error::Io {
+                tds_driver::error::Error::Io {
                     kind: std::io::ErrorKind::TimedOut,
                     ..
                 }

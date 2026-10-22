@@ -112,17 +112,17 @@ fn type_names_are_stable() {
 
 #[test]
 fn maps_driver_column_types() {
-    assert_eq!(SqlType::from(tiberius::ColumnType::Int4), SqlType::Int);
+    assert_eq!(SqlType::from(tds_driver::ColumnType::Int4), SqlType::Int);
     assert_eq!(
-        SqlType::from(tiberius::ColumnType::Numericn),
+        SqlType::from(tds_driver::ColumnType::Numericn),
         SqlType::Numeric
     );
     assert_eq!(
-        SqlType::from(tiberius::ColumnType::BigVarBin),
+        SqlType::from(tds_driver::ColumnType::BigVarBin),
         SqlType::VarBinary
     );
     assert_eq!(
-        SqlType::from(tiberius::ColumnType::NVarchar),
+        SqlType::from(tds_driver::ColumnType::NVarchar),
         SqlType::NVarChar
     );
 }

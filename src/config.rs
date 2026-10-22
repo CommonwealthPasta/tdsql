@@ -168,11 +168,11 @@ impl Config {
     }
 
     /// Build the driver configuration.
-    pub(crate) fn to_tiberius(&self) -> Result<tiberius::Config> {
+    pub(crate) fn to_tiberius(&self) -> Result<tds_driver::Config> {
         match &self.source {
-            Source::Ado(s) => tiberius::Config::from_ado_string(s)
+            Source::Ado(s) => tds_driver::Config::from_ado_string(s)
                 .map_err(|e| Error::Config(format!("invalid ADO connection string: {e}"))),
-            Source::Jdbc(s) => tiberius::Config::from_jdbc_string(s)
+            Source::Jdbc(s) => tds_driver::Config::from_jdbc_string(s)
                 .map_err(|e| Error::Config(format!("invalid JDBC connection string: {e}"))),
             Source::Parts {
                 host,
@@ -184,14 +184,14 @@ impl Config {
                 application_name,
                 connect_timeout,
             } => {
-                let mut cfg = tiberius::Config::new();
+                let mut cfg = tds_driver::Config::new();
                 cfg.set_connect_timeout(*connect_timeout);
                 cfg.host(host);
                 cfg.port(*port);
                 if let Some(db) = database {
                     cfg.database(db);
                 }
-                cfg.authentication(tiberius::AuthMethod::sql_server(username, password));
+                cfg.authentication(tds_driver::AuthMethod::sql_server(username, password));
                 if *trust_cert {
                     cfg.trust_cert();
                 }

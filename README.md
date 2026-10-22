@@ -1,7 +1,7 @@
 # tdsql
 
 `tdsql` is an async Microsoft SQL Server client for Rust, built on the
-[tiberius-ng](https://github.com/MattJackson/tiberius-ng) TDS driver.
+[tds-driver](https://github.com/CommonwealthPasta/tds-driver) TDS driver.
 
 You connect once and run statements on that connection. Queries return rows,
 and you read values out of them as ordinary Rust types:

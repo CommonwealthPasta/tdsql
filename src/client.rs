@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::future::{self, Either};
-use tiberius::SqlBrowser;
+use tds_driver::SqlBrowser;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
@@ -30,15 +30,15 @@ use crate::stream::{RowStream, Streamed};
 use crate::transaction::{IsolationLevel, Transaction};
 use crate::value::{DataValue, FromSql, SqlType, ToSql};
 
-type Driver = tiberius::Client<Compat<TcpStream>>;
+type Driver = tds_driver::Client<Compat<TcpStream>>;
 
 // ---------------------------------------------------------------------------
 // Binding: DataValue -> the driver's wire types.
 // ---------------------------------------------------------------------------
 
-impl tiberius::ToSql for DataValue {
-    fn to_sql(&self) -> tiberius::ColumnData<'_> {
-        use tiberius::ColumnData as C;
+impl tds_driver::ToSql for DataValue {
+    fn to_sql(&self) -> tds_driver::ColumnData<'_> {
+        use tds_driver::ColumnData as C;
         match self {
             DataValue::TinyInt(v) => C::U8(Some(*v)),
             DataValue::SmallInt(v) => C::I16(Some(*v)),
@@ -61,14 +61,14 @@ impl tiberius::ToSql for DataValue {
     }
 }
 
-impl<'a> tiberius::IntoSql<'a> for DataValue {
-    fn into_sql(self) -> tiberius::ColumnData<'a> {
-        use tiberius::ColumnData as C;
+impl<'a> tds_driver::IntoSql<'a> for DataValue {
+    fn into_sql(self) -> tds_driver::ColumnData<'a> {
+        use tds_driver::ColumnData as C;
         match self {
             DataValue::Text(v) => C::String(Some(Cow::Owned(v))),
             DataValue::Binary(v) => C::Binary(Some(Cow::Owned(v))),
             // Every other variant borrows nothing.
-            other => match tiberius::ToSql::to_sql(&other) {
+            other => match tds_driver::ToSql::to_sql(&other) {
                 C::U8(v) => C::U8(v),
                 C::I16(v) => C::I16(v),
                 C::I32(v) => C::I32(v),
@@ -100,11 +100,11 @@ impl<'a> tiberius::IntoSql<'a> for DataValue {
 ///
 /// This is the crate's single mapping path: every query goes through it, so
 /// the row-returning and scalar-returning paths can never drift.
-pub(crate) fn map_column_data(cd: tiberius::ColumnData<'_>, column: &str) -> Result<DataValue> {
-    use tiberius::ColumnData as C;
+pub(crate) fn map_column_data(cd: tds_driver::ColumnData<'_>, column: &str) -> Result<DataValue> {
+    use tds_driver::ColumnData as C;
 
     // A temporal value the server sent but `chrono` cannot represent.
-    fn temporal(column: &str, target: &'static str) -> impl Fn(tiberius::error::Error) -> Error {
+    fn temporal(column: &str, target: &'static str) -> impl Fn(tds_driver::error::Error) -> Error {
         let column = column.to_string();
         move |_| Error::Conversion {
             column: column.clone(),
@@ -145,38 +145,38 @@ pub(crate) fn map_column_data(cd: tiberius::ColumnData<'_>, column: &str) -> Res
 
         // These used to `.unwrap()`, panicking the caller's task on bad data.
         C::DateTime(v) => {
-            <chrono::NaiveDateTime as tiberius::FromSqlOwned>::from_sql_owned(C::DateTime(v))
+            <chrono::NaiveDateTime as tds_driver::FromSqlOwned>::from_sql_owned(C::DateTime(v))
                 .map_err(temporal(column, "NaiveDateTime"))?
                 .map(DataValue::DateTime)
                 .unwrap_or_default()
         }
 
         C::SmallDateTime(v) => {
-            <chrono::NaiveDateTime as tiberius::FromSqlOwned>::from_sql_owned(C::SmallDateTime(v))
+            <chrono::NaiveDateTime as tds_driver::FromSqlOwned>::from_sql_owned(C::SmallDateTime(v))
                 .map_err(temporal(column, "NaiveDateTime"))?
                 .map(DataValue::DateTime)
                 .unwrap_or_default()
         }
 
         C::DateTime2(v) => {
-            <chrono::NaiveDateTime as tiberius::FromSqlOwned>::from_sql_owned(C::DateTime2(v))
+            <chrono::NaiveDateTime as tds_driver::FromSqlOwned>::from_sql_owned(C::DateTime2(v))
                 .map_err(temporal(column, "NaiveDateTime"))?
                 .map(DataValue::DateTime)
                 .unwrap_or_default()
         }
 
-        C::Time(v) => <chrono::NaiveTime as tiberius::FromSqlOwned>::from_sql_owned(C::Time(v))
+        C::Time(v) => <chrono::NaiveTime as tds_driver::FromSqlOwned>::from_sql_owned(C::Time(v))
             .map_err(temporal(column, "NaiveTime"))?
             .map(DataValue::Time)
             .unwrap_or_default(),
 
-        C::Date(v) => <chrono::NaiveDate as tiberius::FromSqlOwned>::from_sql_owned(C::Date(v))
+        C::Date(v) => <chrono::NaiveDate as tds_driver::FromSqlOwned>::from_sql_owned(C::Date(v))
             .map_err(temporal(column, "NaiveDate"))?
             .map(DataValue::Date)
             .unwrap_or_default(),
 
         C::DateTimeOffset(v) => {
-            <chrono::DateTime<chrono::FixedOffset> as tiberius::FromSqlOwned>::from_sql_owned(
+            <chrono::DateTime<chrono::FixedOffset> as tds_driver::FromSqlOwned>::from_sql_owned(
                 C::DateTimeOffset(v),
             )
             .map_err(temporal(column, "DateTime<FixedOffset>"))?
@@ -186,14 +186,14 @@ pub(crate) fn map_column_data(cd: tiberius::ColumnData<'_>, column: &str) -> Res
     })
 }
 
-fn columns_of(meta: &tiberius::ResultMetadata) -> Arc<[Column]> {
+fn columns_of(meta: &tds_driver::ResultMetadata) -> Arc<[Column]> {
     meta.columns()
         .iter()
         .map(|c| Column::new(c.name(), SqlType::from(c.column_type())))
         .collect()
 }
 
-fn row_of(row: tiberius::Row, columns: &Arc<[Column]>) -> Result<Row> {
+fn row_of(row: tds_driver::Row, columns: &Arc<[Column]>) -> Result<Row> {
     let mut values = Vec::with_capacity(columns.len());
     for (i, cd) in row.into_iter().enumerate() {
         let name = columns.get(i).map(Column::name).unwrap_or("?");
@@ -203,7 +203,7 @@ fn row_of(row: tiberius::Row, columns: &Arc<[Column]>) -> Result<Row> {
 }
 
 /// Collect a query stream into its result sets, in server order.
-async fn collect_query_stream(mut stream: tiberius::QueryStream<'_>) -> Result<DataSet> {
+async fn collect_query_stream(mut stream: tds_driver::QueryStream<'_>) -> Result<DataSet> {
     let mut dataset = DataSet::new();
     let mut current: Option<(DataTable, Arc<[Column]>)> = None;
     // The first failure, held back until the response has been fully read so
@@ -212,7 +212,7 @@ async fn collect_query_stream(mut stream: tiberius::QueryStream<'_>) -> Result<D
 
     while let Some(item) = stream.next().await {
         match item {
-            Ok(tiberius::QueryItem::Metadata(meta)) => {
+            Ok(tds_driver::QueryItem::Metadata(meta)) => {
                 if let Some((table, _)) = current.take() {
                     dataset.push(table);
                 }
@@ -220,7 +220,7 @@ async fn collect_query_stream(mut stream: tiberius::QueryStream<'_>) -> Result<D
                 let name = format!("table{}", meta.result_index());
                 current = Some((DataTable::new(name, Arc::clone(&columns)), columns));
             }
-            Ok(tiberius::QueryItem::Row(row)) if failure.is_none() => {
+            Ok(tds_driver::QueryItem::Row(row)) if failure.is_none() => {
                 let (table, columns) = current.get_or_insert_with(|| {
                     let columns: Arc<[Column]> = Arc::from(Vec::new());
                     (DataTable::new("table0", Arc::clone(&columns)), columns)
@@ -230,7 +230,7 @@ async fn collect_query_stream(mut stream: tiberius::QueryStream<'_>) -> Result<D
                     Err(e) => failure = Some(e),
                 }
             }
-            Ok(tiberius::QueryItem::Row(_)) => {}
+            Ok(tds_driver::QueryItem::Row(_)) => {}
             // The driver holds a server error back until it has read to the
             // end of the response, so nothing follows this.
             Err(e) => {
@@ -249,8 +249,8 @@ async fn collect_query_stream(mut stream: tiberius::QueryStream<'_>) -> Result<D
     Ok(dataset)
 }
 
-fn as_tiberius_refs(values: &[DataValue]) -> Vec<&dyn tiberius::ToSql> {
-    values.iter().map(|v| v as &dyn tiberius::ToSql).collect()
+fn as_tiberius_refs(values: &[DataValue]) -> Vec<&dyn tds_driver::ToSql> {
+    values.iter().map(|v| v as &dyn tds_driver::ToSql).collect()
 }
 
 pub(crate) fn to_values(params: &[&dyn ToSql]) -> Vec<DataValue> {
@@ -417,14 +417,14 @@ async fn restore_isolation(driver: &mut Driver, level_changed: &mut bool) -> boo
 }
 
 /// Opens a connection to the server `cfg` names, following one redirect.
-async fn open(mut cfg: tiberius::Config) -> tiberius::Result<Driver> {
+async fn open(mut cfg: tds_driver::Config) -> tds_driver::Result<Driver> {
     let mut redirected = false;
     loop {
         let tcp = TcpStream::connect_named(&cfg).await?;
         tcp.set_nodelay(true)?;
-        match tiberius::Client::connect(cfg.clone(), tcp.compat_write()).await {
+        match tds_driver::Client::connect(cfg.clone(), tcp.compat_write()).await {
             // ENVCHANGE routing (MS-TDS 2.2.7.9): log in again where it says.
-            Err(tiberius::error::Error::Routing { host, port }) if !redirected => {
+            Err(tds_driver::error::Error::Routing { host, port }) if !redirected => {
                 redirected = true;
                 cfg.host(host);
                 cfg.port(port);
@@ -570,7 +570,7 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 }
             }
             Request::Savepoint { name, reply } => {
-                // Not `driver.save_transaction`: tiberius-ng 0.13.1 encodes the
+                // Not `driver.save_transaction`: tds-driver 0.1.0 encodes the
                 // TM_SAVE_XACT name length as a count of UTF-16 code units
                 // where the server reads a byte count, so any non-empty name is
                 // rejected ("odd length N" / "TM request is longer than
@@ -671,14 +671,14 @@ async fn stream_query(
         Ok(mut stream) => {
             while let Some(item) = stream.next().await {
                 match item {
-                    Ok(tiberius::QueryItem::Metadata(meta)) => match header.take() {
+                    Ok(tds_driver::QueryItem::Metadata(meta)) => match header.take() {
                         Some(header) => {
                             columns = columns_of(&meta);
                             forwarding = header.send(Ok(Arc::clone(&columns))).is_ok();
                         }
                         None => forwarding = false,
                     },
-                    Ok(tiberius::QueryItem::Row(row)) if forwarding => {
+                    Ok(tds_driver::QueryItem::Row(row)) if forwarding => {
                         match row_of(row, &columns) {
                             Ok(row) => {
                                 forwarding = rows.send(Ok(Streamed::Row(row))).await.is_ok();
@@ -689,7 +689,7 @@ async fn stream_query(
                             }
                         }
                     }
-                    Ok(tiberius::QueryItem::Row(_)) => {}
+                    Ok(tds_driver::QueryItem::Row(_)) => {}
                     // The driver holds a server error back until it has read
                     // to the end of the response, so nothing follows this.
                     Err(e) => {
@@ -723,8 +723,8 @@ async fn stream_query(
     }
 }
 
-fn build_proc<'a>(name: &str, params: Vec<(String, DataValue)>) -> tiberius::Command<'a> {
-    let mut cmd = tiberius::Command::new(name.to_string());
+fn build_proc<'a>(name: &str, params: Vec<(String, DataValue)>) -> tds_driver::Command<'a> {
+    let mut cmd = tds_driver::Command::new(name.to_string());
     for (pname, value) in params {
         cmd.bind_param(pname, value);
     }
@@ -745,7 +745,7 @@ async fn run_proc_query(
 
     while let Some(item) = stream.next().await {
         match item {
-            Ok(tiberius::CommandItem::Metadata(meta)) => {
+            Ok(tds_driver::CommandItem::Metadata(meta)) => {
                 if let Some((table, _)) = current.take() {
                     dataset.push(table);
                 }
@@ -753,7 +753,7 @@ async fn run_proc_query(
                 let tname = format!("table{}", meta.result_index());
                 current = Some((DataTable::new(tname, Arc::clone(&columns)), columns));
             }
-            Ok(tiberius::CommandItem::Row(row)) if failure.is_none() => {
+            Ok(tds_driver::CommandItem::Row(row)) if failure.is_none() => {
                 let (table, columns) = current.get_or_insert_with(|| {
                     let columns: Arc<[Column]> = Arc::from(Vec::new());
                     (DataTable::new("table0", Arc::clone(&columns)), columns)
@@ -763,7 +763,7 @@ async fn run_proc_query(
                     Err(e) => failure = Some(e),
                 }
             }
-            Ok(tiberius::CommandItem::Row(_)) => {}
+            Ok(tds_driver::CommandItem::Row(_)) => {}
             Ok(_) => {}
             // The driver holds a server error back until it has read to the
             // end of the response, so nothing follows this.
@@ -791,7 +791,7 @@ async fn run_proc_execute(
     let mut stream = build_proc(name, params).exec(driver).await?;
     let mut total = 0u64;
     while let Some(item) = stream.next().await {
-        if let tiberius::CommandItem::RowsAffected(n) = item? {
+        if let tds_driver::CommandItem::RowsAffected(n) = item? {
             total += n;
         }
     }
@@ -869,7 +869,7 @@ impl Client {
         let open = open(cfg);
         let opened = match limit {
             Some(limit) => tokio::time::timeout(limit, open).await.unwrap_or_else(|_| {
-                Err(tiberius::error::Error::Io {
+                Err(tds_driver::error::Error::Io {
                     kind: std::io::ErrorKind::TimedOut,
                     message: format!("no connection within {limit:?}"),
                 })

@@ -65,12 +65,12 @@ impl fmt::Display for Statement<'_> {
 /// The driver error is the `source` as well, but a caller who prints only the
 /// top-level message would otherwise never see the one thing that explains the
 /// failure: what the server actually said.
-struct Detail<'a>(&'a tiberius::error::Error);
+struct Detail<'a>(&'a tds_driver::error::Error);
 
 impl fmt::Display for Detail<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            tiberius::error::Error::Server(token) => {
+            tds_driver::error::Error::Server(token) => {
                 write!(f, ": {}", token.message())?;
                 if !token.procedure().is_empty() {
                     write!(f, " (in {})", token.procedure())?;
@@ -104,7 +104,7 @@ pub enum Error {
         server: String,
         /// The underlying driver failure.
         #[source]
-        source: Box<tiberius::error::Error>,
+        source: Box<tds_driver::error::Error>,
     },
 
     /// A network-level I/O failure.
@@ -135,7 +135,7 @@ pub enum Error {
         parameters: usize,
         /// The underlying driver failure.
         #[source]
-        source: Box<tiberius::error::Error>,
+        source: Box<tds_driver::error::Error>,
     },
 
     /// No column with this name exists in the row.
@@ -263,13 +263,13 @@ impl Error {
 
     /// The server's own error token, when the failure came from the server
     /// rather than from the socket or the protocol layer.
-    fn token(&self) -> Option<&tiberius::error::TokenError> {
+    fn token(&self) -> Option<&tds_driver::error::TokenError> {
         let source = match self {
             Error::Connect { source, .. } | Error::Query { source, .. } => source.as_ref(),
             _ => return None,
         };
         match source {
-            tiberius::error::Error::Server(token) => Some(token),
+            tds_driver::error::Error::Server(token) => Some(token),
             _ => None,
         }
     }
@@ -334,12 +334,12 @@ impl Error {
     }
 }
 
-impl From<tiberius::error::Error> for Error {
+impl From<tds_driver::error::Error> for Error {
     /// Wrap a driver failure that carries no statement context.
     ///
     /// The connection task fills the context in with `with_statement` before
     /// the error reaches a caller.
-    fn from(e: tiberius::error::Error) -> Self {
+    fn from(e: tds_driver::error::Error) -> Self {
         Error::Query {
             kind: StatementKind::Query,
             statement: String::new(),
@@ -387,8 +387,8 @@ mod tests {
     // A `Server` token cannot be built outside the driver, so these cover the
     // context this crate adds; the server's own fields are read through
     // `token()`, which every accessor shares.
-    fn driver_error() -> tiberius::error::Error {
-        tiberius::error::Error::Protocol("stream desync".into())
+    fn driver_error() -> tds_driver::error::Error {
+        tds_driver::error::Error::Protocol("stream desync".into())
     }
 
     fn query_error(kind: StatementKind, statement: &str, parameters: usize) -> Error {
