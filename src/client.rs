@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::future::{self, Either};
+use tiberius::SqlBrowser;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
@@ -401,7 +402,7 @@ async fn serve<T>(
 
 /// Opens a connection to the server `cfg` names.
 async fn open(cfg: tiberius::Config) -> tiberius::Result<Driver> {
-    let tcp = TcpStream::connect(cfg.get_addr()).await?;
+    let tcp = TcpStream::connect_named(&cfg).await?;
     tcp.set_nodelay(true)?;
     tiberius::Client::connect(cfg, tcp.compat_write()).await
 }
@@ -813,7 +814,8 @@ impl Client {
     /// Connect using this configuration.
     ///
     /// Gives up after the configuration's connect timeout, 15 seconds unless
-    /// set.
+    /// set. A named instance given without a port (`host\INSTANCE`) is found
+    /// through SQL Server Browser.
     pub async fn connect(config: &Config) -> Result<Self> {
         let cfg = config.to_tiberius()?;
         let server = cfg.get_addr();

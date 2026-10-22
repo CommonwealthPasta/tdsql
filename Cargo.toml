@@ -24,7 +24,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-tiberius = { package = "tiberius-ng", version = "0.13.1", default-features = false, features = ["native-tls", "tds73", "tds80", "chrono", "rust_decimal"] }
+tiberius = { package = "tiberius-ng", version = "0.13.1", default-features = false, features = ["native-tls", "tds73", "tds80", "chrono", "rust_decimal", "sql-browser-tokio"] }
 thiserror = "2.0.20"
 futures = "0.3.34"
 chrono = { version = "0.4.45", features = ["clock"] }
