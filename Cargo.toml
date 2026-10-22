@@ -34,7 +34,7 @@ uuid = "1.26"
 rust_decimal = "1.43"
 
 [dev-dependencies]
-tokio = { version = "1.53", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "io-util"] }
 # Depending on ourselves as a dev-dependency turns on `blocking` for test
 # targets only, so `cargo test` covers the feature-gated examples without
 # adding it to the default feature set. Path-only dev-dependencies are

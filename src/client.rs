@@ -400,11 +400,22 @@ async fn serve<T>(
     }
 }
 
-/// Opens a connection to the server `cfg` names.
-async fn open(cfg: tiberius::Config) -> tiberius::Result<Driver> {
-    let tcp = TcpStream::connect_named(&cfg).await?;
-    tcp.set_nodelay(true)?;
-    tiberius::Client::connect(cfg, tcp.compat_write()).await
+/// Opens a connection to the server `cfg` names, following one redirect.
+async fn open(mut cfg: tiberius::Config) -> tiberius::Result<Driver> {
+    let mut redirected = false;
+    loop {
+        let tcp = TcpStream::connect_named(&cfg).await?;
+        tcp.set_nodelay(true)?;
+        match tiberius::Client::connect(cfg.clone(), tcp.compat_write()).await {
+            // ENVCHANGE routing (MS-TDS 2.2.7.9): log in again where it says.
+            Err(tiberius::error::Error::Routing { host, port }) if !redirected => {
+                redirected = true;
+                cfg.host(host);
+                cfg.port(port);
+            }
+            connected => return connected,
+        }
+    }
 }
 
 /// Own the driver and serve requests until every handle is gone.
@@ -815,7 +826,8 @@ impl Client {
     ///
     /// Gives up after the configuration's connect timeout, 15 seconds unless
     /// set. A named instance given without a port (`host\INSTANCE`) is found
-    /// through SQL Server Browser.
+    /// through SQL Server Browser, and a redirect to another server, as Azure
+    /// SQL's gateway sends, is followed.
     pub async fn connect(config: &Config) -> Result<Self> {
         let cfg = config.to_tiberius()?;
         let server = cfg.get_addr();

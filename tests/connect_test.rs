@@ -1,4 +1,4 @@
-//! Connection set-up: the connect timeout and named instances.
+//! Connection set-up: the connect timeout, named instances and redirects.
 //!
 //! The `#[ignore]`d tests need SQL Server on localhost:1433:
 //!
@@ -11,7 +11,8 @@
 use std::time::{Duration, Instant};
 
 use tdsql::{Client, Config, Error};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 const LOGIN: &str = "User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=true";
 
@@ -102,4 +103,75 @@ async fn a_named_instance_is_found_through_sql_server_browser() {
     let one: i32 = client.query_scalar("SELECT 1", &[]).await.unwrap();
     assert_eq!(one, 1);
     browser.await.unwrap();
+}
+
+fn packet(ty: u8, payload: &[u8]) -> Vec<u8> {
+    let len = (payload.len() + 8) as u16;
+    let mut p = vec![ty, 1, (len >> 8) as u8, len as u8, 0, 0, 1, 0];
+    p.extend_from_slice(payload);
+    p
+}
+
+/// Reads one message from the client.
+async fn read_message(s: &mut TcpStream) {
+    loop {
+        let mut header = [0u8; 8];
+        s.read_exact(&mut header).await.unwrap();
+        let mut body = vec![0u8; u16::from_be_bytes([header[2], header[3]]) as usize - 8];
+        s.read_exact(&mut body).await.unwrap();
+        if header[1] & 1 == 1 {
+            return;
+        }
+    }
+}
+
+/// A gateway that answers the login with a redirect to `host:port`, as Azure
+/// SQL's does.
+async fn redirecting_gateway(host: &'static str, port: u16) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+
+        // PRELOGIN: version, then ENCRYPT_NOT_SUP.
+        read_message(&mut s).await;
+        let prelogin = [
+            0x00, 0, 11, 0, 6, 0x01, 0, 17, 0, 1, 0xff, 16, 0, 0x07, 0xd0, 0, 0, 2,
+        ];
+        s.write_all(&packet(4, &prelogin)).await.unwrap();
+
+        // LOGIN7, answered with ENVCHANGE routing (MS-TDS 2.2.7.9) and DONE.
+        read_message(&mut s).await;
+        let host: Vec<u8> = host.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut value = vec![0u8];
+        value.extend_from_slice(&port.to_le_bytes());
+        value.extend_from_slice(&((host.len() / 2) as u16).to_le_bytes());
+        value.extend_from_slice(&host);
+        let mut change = vec![20u8];
+        change.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        change.extend_from_slice(&value);
+        change.extend_from_slice(&[0, 0]);
+        let mut tokens = vec![0xE3];
+        tokens.extend_from_slice(&(change.len() as u16).to_le_bytes());
+        tokens.extend_from_slice(&change);
+        tokens.extend_from_slice(&[0xFD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        s.write_all(&packet(4, &tokens)).await.unwrap();
+        let _ = s.read(&mut [0u8; 1]).await;
+    });
+    gateway
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_redirect_is_followed() {
+    let gateway = redirecting_gateway("127.0.0.1", 1433).await;
+
+    // Unencrypted, as the fake gateway has no TLS.
+    let config = Config::from_ado_string(format!(
+        "Server=tcp:127.0.0.1,{gateway};{LOGIN};Encrypt=DANGER_PLAINTEXT"
+    ));
+    // Before, this failed with the redirect as its error.
+    let mut client = Client::connect(&config).await.unwrap();
+    let one: i32 = client.query_scalar("SELECT 1", &[]).await.unwrap();
+    assert_eq!(one, 1);
 }

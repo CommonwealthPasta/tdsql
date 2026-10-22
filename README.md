@@ -76,7 +76,8 @@ output hides the password, so it's safe to log.
 Connecting gives up after 15 seconds unless the config says otherwise: use
 `Config::connect_timeout`, or `Connect Timeout` in a connection string, where 0
 means no limit. A named instance without a port, such as `Server=host\SQLEXPRESS`,
-is found through SQL Server Browser.
+is found through SQL Server Browser. If the server redirects the login, as Azure
+SQL's gateway does, `connect` follows it.
 
 A `Client` is one connection, reused for every statement. The driver doesn't
 support MARS, so a connection runs one request at a time. For concurrency, use a
