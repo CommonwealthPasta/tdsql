@@ -51,8 +51,51 @@ async fn drop_table(client: &mut Client, name: &str) {
         .unwrap();
 }
 
-/// `sys.dm_exec_sessions.transaction_isolation_level` for READ COMMITTED.
+/// The session's isolation level, as `sys.dm_exec_sessions` numbers it.
+async fn isolation(client: &mut Client) -> i16 {
+    client
+        .query_scalar(
+            "SELECT transaction_isolation_level FROM sys.dm_exec_sessions \
+             WHERE session_id = @@SPID",
+            &[],
+        )
+        .await
+        .unwrap()
+}
+
 const READ_COMMITTED: i16 = 2;
+const SERIALIZABLE: i16 = 4;
+
+#[tokio::test]
+#[ignore]
+async fn an_isolation_level_ends_with_its_transaction() {
+    let mut client = connect().await;
+
+    let mut tx = client
+        .transaction_with_isolation(IsolationLevel::Serializable)
+        .await
+        .unwrap();
+    let inside: i16 = tx
+        .query_scalar(
+            "SELECT transaction_isolation_level FROM sys.dm_exec_sessions \
+             WHERE session_id = @@SPID",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(inside, SERIALIZABLE);
+    tx.commit().await.unwrap();
+    assert_eq!(isolation(&mut client).await, READ_COMMITTED);
+
+    // Dropped, so rolled back without a reply.
+    drop(
+        client
+            .transaction_with_isolation(IsolationLevel::Serializable)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(isolation(&mut client).await, READ_COMMITTED);
+}
 
 #[tokio::test]
 #[ignore]

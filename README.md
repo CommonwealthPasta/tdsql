@@ -320,9 +320,9 @@ tx.commit().await?;
 # }
 ```
 
-You can also choose an isolation level and use savepoints. A savepoint works
-like a nested transaction. Rolling it back undoes its own work and leaves the
-outer transaction open.
+You can also choose an isolation level, which lasts until the transaction
+ends, and use savepoints. A savepoint works like a nested transaction.
+Rolling it back undoes its own work and leaves the outer transaction open.
 
 ```rust,no_run
 # use tdsql::{Client, IsolationLevel};

@@ -185,6 +185,8 @@ impl Client {
     }
 
     /// Begin a transaction at an explicit isolation level.
+    ///
+    /// Once it ends, the connection goes back to `READ COMMITTED`.
     pub fn transaction_with_isolation(&mut self, level: IsolationLevel) -> Result<Transaction<'_>> {
         let Self { runtime, inner } = self;
         let tx = runtime.block_on(inner.transaction_with_isolation(level))?;

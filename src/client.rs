@@ -400,6 +400,22 @@ async fn serve<T>(
     }
 }
 
+/// Puts the connection back at READ COMMITTED once a transaction begun at
+/// another level has ended; that level would otherwise carry over to every
+/// later statement. `false` if the connection can't be trusted any more.
+async fn restore_isolation(driver: &mut Driver, level_changed: &mut bool) -> bool {
+    if !std::mem::take(level_changed) {
+        return true;
+    }
+    match driver
+        .simple_query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        .await
+    {
+        Ok(stream) => collect_query_stream(stream).await.is_ok(),
+        Err(_) => false,
+    }
+}
+
 /// Opens a connection to the server `cfg` names, following one redirect.
 async fn open(mut cfg: tiberius::Config) -> tiberius::Result<Driver> {
     let mut redirected = false;
@@ -429,6 +445,10 @@ async fn open(mut cfg: tiberius::Config) -> tiberius::Result<Driver> {
 /// every request still queued, and every later one, fails with
 /// [`Error::ConnectionClosed`].
 async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Request>) {
+    // A transaction began at a level other than READ COMMITTED. The level
+    // outlives it on the connection (MS-TDS 2.2.6.9).
+    let mut level_changed = false;
+
     while let Some(request) = rx.recv().await {
         // Not sent yet, so cancelling it is as simple as not sending it.
         if request.abandoned() {
@@ -526,6 +546,14 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                     .map_err(|e| {
                         e.with_statement(StatementKind::TransactionControl, "BEGIN TRANSACTION", 0)
                     });
+                if result.is_ok()
+                    && !matches!(
+                        level,
+                        IsolationLevel::ReadCommitted | IsolationLevel::Unspecified
+                    )
+                {
+                    level_changed = true;
+                }
                 let _ = reply.send(result);
             }
             Request::Commit { reply } => {
@@ -537,6 +565,9 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                         e.with_statement(StatementKind::TransactionControl, "COMMIT TRANSACTION", 0)
                     });
                 let _ = reply.send(result);
+                if !restore_isolation(&mut driver, &mut level_changed).await {
+                    return;
+                }
             }
             Request::Savepoint { name, reply } => {
                 // Not `driver.save_transaction`: tiberius-ng 0.13.1 encodes the
@@ -572,6 +603,9 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                     });
                 if let Some(reply) = reply {
                     let _ = reply.send(result);
+                }
+                if !restore_isolation(&mut driver, &mut level_changed).await {
+                    return;
                 }
             }
             Request::RollbackTo { name, reply } => {
@@ -1073,6 +1107,8 @@ impl Client {
     }
 
     /// Begin a transaction at an explicit isolation level.
+    ///
+    /// Once it ends, the connection goes back to `READ COMMITTED`.
     pub async fn transaction_with_isolation(
         &mut self,
         level: IsolationLevel,
