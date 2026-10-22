@@ -209,13 +209,8 @@ if report.is_err() {
 ```
 
 A request still waiting its turn behind another never runs. One that's running
-stops at the next row or result set to come back. Two things can't be stopped
-partway:
-
-- A statement that hasn't sent anything back yet, because it's still sorting,
-  aggregating or waiting on a lock, runs until it does and is cancelled then.
-- `execute`, and `execute_command` with a text command, run to completion once
-  sent, because the driver reads their whole response in one go.
+stops where it is, even if it hasn't sent anything back yet because it's still
+sorting, aggregating or waiting on a lock.
 
 Transaction control (begin, commit, rollback, savepoints) always runs, whatever
 became of its future. Cancelling stops a statement, not the transaction around

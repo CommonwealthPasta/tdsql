@@ -10,8 +10,9 @@
 //! ```
 
 use std::future::Future;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use futures::FutureExt;
 use tdsql::{Client, Command, Config};
 
 fn test_config() -> Config {
@@ -109,7 +110,7 @@ async fn giving_up_on_a_stored_procedure_cancels_it() {
     give_up(client.query_dataset(&endless)).await;
     assert_free(&mut client).await;
 
-    // Run for its row count, its rows are still items to stop between.
+    // And run for its row count.
     give_up(client.execute_command(&endless)).await;
     assert_free(&mut client).await;
 }
@@ -156,12 +157,10 @@ async fn a_request_given_up_on_while_queued_never_runs() {
         .await
         .unwrap();
 
-    // Holds the connection for a second, in a WAITFOR that sends nothing back
-    // and so has nowhere to be stopped early.
-    give_up(client.query_stream("WAITFOR DELAY '00:00:01'; SELECT 1 AS n", &[])).await;
-
-    // Queued behind it, then given up on before it was ever sent.
-    give_up(client.execute("INSERT INTO #tdsql_cancel_queued (id) VALUES (1)", &[])).await;
+    // Polled once, the request is queued, then given up on. The test runtime
+    // has one thread, so the connection can't get to it in between.
+    let insert = client.execute("INSERT INTO #tdsql_cancel_queued (id) VALUES (1)", &[]);
+    assert!(insert.now_or_never().is_none());
 
     let count: i32 =
         promptly(client.query_scalar("SELECT COUNT(*) FROM #tdsql_cancel_queued", &[]))
@@ -223,24 +222,21 @@ async fn cancelling_after_the_server_has_finished_leaves_the_connection_clean() 
     assert_free(&mut client).await;
 }
 
+/// Sends nothing back for half a minute, like a statement still sorting,
+/// aggregating or waiting on a lock.
+const SILENT: &str = "WAITFOR DELAY '00:00:30'; SELECT 1 AS n";
+
 #[tokio::test]
 #[ignore]
-async fn a_query_still_working_on_its_first_row_is_cancelled_once_it_arrives() {
+async fn giving_up_on_a_query_that_has_sent_nothing_back_cancels_it() {
     let mut client = connect().await;
-    let started = Instant::now();
-
-    give_up(client.query(&format!("WAITFOR DELAY '00:00:01'; {ENDLESS}"), &[])).await;
+    give_up(client.query(SILENT, &[])).await;
     assert_free(&mut client).await;
-
-    // Nothing came back during the WAITFOR, so there was nowhere to stop it
-    // before then -- but the endless SELECT after it was cancelled.
-    let took = started.elapsed();
-    assert!(took >= Duration::from_secs(1), "freed after {took:?}");
 }
 
 #[tokio::test]
 #[ignore]
-async fn giving_up_on_execute_once_it_has_started_lets_it_finish() {
+async fn giving_up_on_execute_cancels_it() {
     let mut client = connect().await;
     client
         .batch("CREATE TABLE #tdsql_cancel_execute (id INT)")
@@ -248,16 +244,41 @@ async fn giving_up_on_execute_once_it_has_started_lets_it_finish() {
         .unwrap();
 
     give_up(client.execute(
-        "WAITFOR DELAY '00:00:01'; INSERT INTO #tdsql_cancel_execute (id) VALUES (1)",
+        "WAITFOR DELAY '00:00:30'; INSERT INTO #tdsql_cancel_execute (id) VALUES (1)",
         &[],
     ))
     .await;
 
-    // The driver reads an execute's response in one go, so there was no point
-    // at which to stop it.
+    // The INSERT after the WAITFOR never ran.
     let count: i32 =
         promptly(client.query_scalar("SELECT COUNT(*) FROM #tdsql_cancel_execute", &[]))
             .await
             .unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+#[ignore]
+async fn giving_up_and_dropping_the_client_stops_the_query_on_the_server() {
+    // Connected first, so it can't be handed the client's session ID.
+    let mut observer = connect().await;
+    let mut client = connect().await;
+    let session: i16 = client.query_scalar("SELECT @@SPID", &[]).await.unwrap();
+    give_up(client.query(SILENT, &[])).await;
+    drop(client);
+
+    promptly(async {
+        while observer
+            .query_scalar::<i32>(
+                "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE session_id = @P1",
+                &[&session],
+            )
+            .await
+            .unwrap()
+            > 0
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
 }
