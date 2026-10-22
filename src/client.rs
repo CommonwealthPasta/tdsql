@@ -205,10 +205,13 @@ fn row_of(row: tiberius::Row, columns: &Arc<[Column]>) -> Result<Row> {
 async fn collect_query_stream(mut stream: tiberius::QueryStream<'_>) -> Result<DataSet> {
     let mut dataset = DataSet::new();
     let mut current: Option<(DataTable, Arc<[Column]>)> = None;
+    // The first failure, held back until the response has been fully read so
+    // the connection is clean for the next request.
+    let mut failure: Option<Error> = None;
 
     while let Some(item) = stream.next().await {
-        match item? {
-            tiberius::QueryItem::Metadata(meta) => {
+        match item {
+            Ok(tiberius::QueryItem::Metadata(meta)) => {
                 if let Some((table, _)) = current.take() {
                     dataset.push(table);
                 }
@@ -216,16 +219,29 @@ async fn collect_query_stream(mut stream: tiberius::QueryStream<'_>) -> Result<D
                 let name = format!("table{}", meta.result_index());
                 current = Some((DataTable::new(name, Arc::clone(&columns)), columns));
             }
-            tiberius::QueryItem::Row(row) => {
+            Ok(tiberius::QueryItem::Row(row)) if failure.is_none() => {
                 let (table, columns) = current.get_or_insert_with(|| {
                     let columns: Arc<[Column]> = Arc::from(Vec::new());
                     (DataTable::new("table0", Arc::clone(&columns)), columns)
                 });
-                table.push(row_of(row, columns)?);
+                match row_of(row, columns) {
+                    Ok(row) => table.push(row),
+                    Err(e) => failure = Some(e),
+                }
+            }
+            Ok(tiberius::QueryItem::Row(_)) => {}
+            // The driver holds a server error back until it has read to the
+            // end of the response, so nothing follows this.
+            Err(e) => {
+                failure.get_or_insert(e.into());
+                break;
             }
         }
     }
 
+    if let Some(e) = failure {
+        return Err(e);
+    }
     if let Some((table, _)) = current.take() {
         dataset.push(table);
     }
@@ -671,10 +687,12 @@ async fn run_proc_query(
 
     let mut dataset = DataSet::new();
     let mut current: Option<(DataTable, Arc<[Column]>)> = None;
+    // As in `collect_query_stream`.
+    let mut failure: Option<Error> = None;
 
     while let Some(item) = stream.next().await {
-        match item? {
-            tiberius::CommandItem::Metadata(meta) => {
+        match item {
+            Ok(tiberius::CommandItem::Metadata(meta)) => {
                 if let Some((table, _)) = current.take() {
                     dataset.push(table);
                 }
@@ -682,17 +700,30 @@ async fn run_proc_query(
                 let tname = format!("table{}", meta.result_index());
                 current = Some((DataTable::new(tname, Arc::clone(&columns)), columns));
             }
-            tiberius::CommandItem::Row(row) => {
+            Ok(tiberius::CommandItem::Row(row)) if failure.is_none() => {
                 let (table, columns) = current.get_or_insert_with(|| {
                     let columns: Arc<[Column]> = Arc::from(Vec::new());
                     (DataTable::new("table0", Arc::clone(&columns)), columns)
                 });
-                table.push(row_of(row, columns)?);
+                match row_of(row, columns) {
+                    Ok(row) => table.push(row),
+                    Err(e) => failure = Some(e),
+                }
             }
-            _ => {}
+            Ok(tiberius::CommandItem::Row(_)) => {}
+            Ok(_) => {}
+            // The driver holds a server error back until it has read to the
+            // end of the response, so nothing follows this.
+            Err(e) => {
+                failure.get_or_insert(e.into());
+                break;
+            }
         }
     }
 
+    if let Some(e) = failure {
+        return Err(e);
+    }
     if let Some((table, _)) = current.take() {
         dataset.push(table);
     }

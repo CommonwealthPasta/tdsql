@@ -237,6 +237,38 @@ async fn missing_column_is_an_error_not_a_panic() {
 
 #[tokio::test]
 #[ignore]
+async fn a_conversion_failure_fails_the_request_and_leaves_the_connection_clean() {
+    let mut client = connect().await;
+    ddl(
+        &mut client,
+        "CREATE PROCEDURE #tdsql_too_big AS \
+         BEGIN TRAN; SELECT POWER(CAST(10 AS DECIMAL(38, 0)), 30) AS d; COMMIT",
+    )
+    .await;
+
+    // 10^30 fits DECIMAL(38,0) on the server but not `rust_decimal`. Left
+    // unread, the COMMIT after it would leave the connection on a transaction
+    // the server had ended, and the server would reject every later request.
+    let err = client
+        .batch("BEGIN TRAN; SELECT POWER(CAST(10 AS DECIMAL(38, 0)), 30) AS d; COMMIT")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Decimal { .. }), "got {err}");
+    let err = client
+        .query_dataset(&Command::stored_procedure("#tdsql_too_big"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Decimal { .. }), "got {err}");
+
+    let depth: i32 = client
+        .query_scalar("SELECT @@TRANCOUNT", &[])
+        .await
+        .unwrap();
+    assert_eq!(depth, 0);
+}
+
+#[tokio::test]
+#[ignore]
 async fn all_types_query() {
     let mut client = connect().await;
     let ds = client
