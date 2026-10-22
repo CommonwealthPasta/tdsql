@@ -1,6 +1,6 @@
 [package]
 name = "tdsql"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 # Edition 2024 turns on Cargo's MSRV-aware resolver, so a fresh build picks
 # dependency versions that still support `rust-version`. CI depends on that,
