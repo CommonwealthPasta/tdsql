@@ -649,6 +649,21 @@ converts to every column type except the binary ones. Bind `None::<Vec<u8>>`
 for those. A `None` of your own `ToSql` type is untyped too, unless you
 implement `ToSql::null_type`.
 
+### Parameter types and query plans
+
+A string parameter is always `nvarchar`. Compared with an indexed `varchar`
+column under one of the `SQL_*` collations, which is SQL Server's default on
+many installations, that makes the server convert the column rather than the
+parameter, and the index is scanned instead of sought. On 300,000 rows that
+was 20 ms a query instead of 0.4 ms. Cast the parameter in the SQL to get the
+seek back: `WHERE code = CAST(@P1 AS varchar(20))`. Windows collations such as
+`Latin1_General_CI_AS` are not affected.
+
+A `Decimal` parameter is declared as `numeric(38, s)` with the value's own
+scale, so each distinct scale compiles its own plan for the same SQL, and the
+server sizes arithmetic on it for 38 digits, which cuts a product's scale to 6
+places. Round to a fixed scale before binding where that matters.
+
 ## Examples
 
 There are runnable examples in [`examples/`](https://github.com/CommonwealthPasta/tdsql/tree/master/examples).
