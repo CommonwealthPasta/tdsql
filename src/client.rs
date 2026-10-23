@@ -359,9 +359,10 @@ enum Request {
 impl Request {
     /// Whether the caller has stopped waiting for this request.
     ///
-    /// Transaction control never counts as abandoned: [`Transaction`] relies
-    /// on its begin, commit and rollbacks reaching the server whatever became
-    /// of the futures that sent them.
+    /// Ending a transaction never counts as abandoned: [`Transaction`] relies
+    /// on its commit and rollbacks reaching the server whatever became of the
+    /// futures that sent them. A begin nobody waits for is different: no
+    /// `Transaction` will exist to end it, so it must not start.
     fn abandoned(&self) -> bool {
         match self {
             Request::Query { reply, .. }
@@ -371,8 +372,8 @@ impl Request {
                 reply.is_closed()
             }
             Request::QueryStream { header, .. } => header.is_closed(),
-            Request::Begin { .. }
-            | Request::Commit { .. }
+            Request::Begin { reply, .. } => reply.is_closed(),
+            Request::Commit { .. }
             | Request::Savepoint { .. }
             | Request::Rollback { .. }
             | Request::RollbackTo { .. } => false,
@@ -584,7 +585,8 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                     .map_err(|e| {
                         e.with_statement(StatementKind::TransactionControl, "BEGIN TRANSACTION", 0)
                     });
-                if result.is_ok()
+                let began = result.is_ok();
+                if began
                     && !matches!(
                         level,
                         IsolationLevel::ReadCommitted | IsolationLevel::Unspecified
@@ -592,7 +594,18 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 {
                     level_changed = true;
                 }
-                let _ = reply.send(result);
+                if reply.send(result).is_err() && began {
+                    // The caller gave up while the begin was in flight, so no
+                    // `Transaction` exists to end it. Left open, it would
+                    // swallow every later statement and nest the next
+                    // transaction, whose commit would then commit nothing.
+                    if driver.rollback_transaction().await.is_err() {
+                        return;
+                    }
+                    if !restore_isolation(&mut driver, &mut level_changed).await {
+                        return;
+                    }
+                }
             }
             Request::Commit { reply } => {
                 let result = driver

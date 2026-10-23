@@ -6,7 +6,7 @@
 //! cargo test --test transaction_test -- --ignored
 //! ```
 
-use tdsql::{Client, Config, Error, IsolationLevel};
+use tdsql::{Client, Config, Error, Executor, IsolationLevel};
 
 fn test_config() -> Config {
     Config::new()
@@ -378,6 +378,62 @@ async fn client_still_usable_after_a_dropped_transaction() {
     let n: i32 = tx.query_scalar("SELECT 7", &[]).await.unwrap();
     assert_eq!(n, 7);
     tx.commit().await.unwrap();
+}
+
+/// `@@TRANCOUNT` on the connection behind `exec`.
+async fn trancount(exec: &mut impl Executor) -> i32 {
+    exec.query_scalar("SELECT @@TRANCOUNT", &[]).await.unwrap()
+}
+
+#[tokio::test]
+#[ignore]
+async fn giving_up_on_begin_leaves_no_transaction_open() {
+    use futures::FutureExt;
+
+    let mut client = connect().await;
+    fresh_table(&mut client, "tdsql_tx_abandoned_begin").await;
+
+    // Polled once, so the begin is sent, then given up on, as a `timeout` or
+    // `select!` would.
+    assert!(client.transaction().now_or_never().is_none());
+
+    // Give the connection task a moment to see the reply go unclaimed.
+    client.query_scalar::<i32>("SELECT 1", &[]).await.unwrap();
+    assert_eq!(trancount(&mut client).await, 0);
+
+    // A later transaction is its own, not nested in a leftover one, so its
+    // commit is real.
+    let mut tx = client.transaction().await.unwrap();
+    assert_eq!(trancount(&mut tx).await, 1);
+    tx.execute(
+        "INSERT INTO dbo.tdsql_tx_abandoned_begin (id) VALUES (1)",
+        &[],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(trancount(&mut client).await, 0);
+
+    let mut other = connect().await;
+    assert_eq!(ids(&mut other, "tdsql_tx_abandoned_begin").await, vec![1]);
+    drop_table(&mut client, "tdsql_tx_abandoned_begin").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn giving_up_on_a_serializable_begin_restores_the_isolation_level() {
+    use futures::FutureExt;
+
+    let mut client = connect().await;
+    assert!(
+        client
+            .transaction_with_isolation(IsolationLevel::Serializable)
+            .now_or_never()
+            .is_none()
+    );
+    client.query_scalar::<i32>("SELECT 1", &[]).await.unwrap();
+    assert_eq!(trancount(&mut client).await, 0);
+    assert_eq!(isolation(&mut client).await, READ_COMMITTED);
 }
 
 #[tokio::test]
