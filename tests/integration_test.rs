@@ -222,6 +222,70 @@ async fn null_round_trips() {
     assert!(row["v"].is_null());
 }
 
+/// A column of each type, and the `SqlType` a NULL for it binds as.
+const NULL_TARGETS: &[(&str, SqlType)] = &[
+    ("tinyint", SqlType::TinyInt),
+    ("smallint", SqlType::SmallInt),
+    ("int", SqlType::Int),
+    ("bigint", SqlType::BigInt),
+    ("bit", SqlType::Bit),
+    ("decimal(10, 2)", SqlType::Decimal),
+    ("numeric(38, 10)", SqlType::Numeric),
+    ("money", SqlType::Money),
+    ("smallmoney", SqlType::SmallMoney),
+    ("real", SqlType::Real),
+    ("float", SqlType::Float),
+    ("char(5)", SqlType::Char),
+    ("varchar(10)", SqlType::VarChar),
+    ("varchar(max)", SqlType::VarChar),
+    ("nchar(5)", SqlType::NChar),
+    ("nvarchar(10)", SqlType::NVarChar),
+    ("binary(4)", SqlType::Binary),
+    ("varbinary(10)", SqlType::VarBinary),
+    ("varbinary(max)", SqlType::VarBinary),
+    ("uniqueidentifier", SqlType::Guid),
+    ("date", SqlType::Date),
+    ("time", SqlType::Time),
+    ("datetime", SqlType::DateTime),
+    ("smalldatetime", SqlType::SmallDateTime),
+    ("datetime2", SqlType::DateTime2),
+    ("datetimeoffset", SqlType::DateTimeOffset),
+];
+
+#[tokio::test]
+#[ignore]
+async fn a_typed_null_goes_into_and_compares_with_a_column_of_its_type() {
+    let mut client = connect().await;
+    // `xml` and the legacy LOB types can be stored but not compared.
+    let store_only = [
+        ("xml", SqlType::Xml),
+        ("text", SqlType::Text),
+        ("ntext", SqlType::NText),
+        ("image", SqlType::Image),
+    ];
+    for &(column, ty) in NULL_TARGETS.iter().chain(&store_only) {
+        let null = DataValue::TypedNull(ty);
+        ddl(&mut client, &format!("CREATE TABLE #n (c {column})")).await;
+        client
+            .execute("INSERT INTO #n (c) VALUES (@P1)", &[&null])
+            .await
+            .unwrap_or_else(|e| panic!("inserting a {ty:?} NULL into {column}: {e}"));
+        let nulls: i32 = client
+            .query_scalar("SELECT COUNT(*) FROM #n WHERE c IS NULL", &[])
+            .await
+            .unwrap();
+        assert_eq!(nulls, 1, "{column}");
+        if !store_only.contains(&(column, ty)) {
+            let matches: i32 = client
+                .query_scalar("SELECT COUNT(*) FROM #n WHERE c = @P1", &[&null])
+                .await
+                .unwrap_or_else(|e| panic!("comparing {column} with a {ty:?} NULL: {e}"));
+            assert_eq!(matches, 0, "{column}");
+        }
+        ddl(&mut client, "DROP TABLE #n").await;
+    }
+}
+
 #[tokio::test]
 #[ignore]
 async fn missing_column_is_an_error_not_a_panic() {

@@ -96,6 +96,60 @@ fn converts_positional_params_to_values() {
 }
 
 #[test]
+fn a_typed_null_binds_as_a_null_of_its_type() {
+    for (ty, expected) in [
+        (SqlType::Bit, C::Bit(None)),
+        (SqlType::BitN, C::Bit(None)),
+        (SqlType::TinyInt, C::U8(None)),
+        (SqlType::SmallInt, C::I16(None)),
+        (SqlType::Int, C::I32(None)),
+        (SqlType::BigInt, C::I64(None)),
+        (SqlType::IntN, C::I64(None)),
+        (SqlType::Real, C::F32(None)),
+        (SqlType::Float, C::F64(None)),
+        (SqlType::FloatN, C::F64(None)),
+        (SqlType::Decimal, C::Numeric(None)),
+        (SqlType::Numeric, C::Numeric(None)),
+        (SqlType::Money, C::Numeric(None)),
+        (SqlType::SmallMoney, C::Numeric(None)),
+        (SqlType::Guid, C::Guid(None)),
+        (SqlType::Date, C::Date(None)),
+        (SqlType::Time, C::Time(None)),
+        (SqlType::DateTime, C::DateTime(None)),
+        (SqlType::DateTimeN, C::DateTime(None)),
+        (SqlType::SmallDateTime, C::SmallDateTime(None)),
+        (SqlType::DateTime2, C::DateTime2(None)),
+        (SqlType::DateTimeOffset, C::DateTimeOffset(None)),
+        (SqlType::Binary, C::Binary(None)),
+        (SqlType::VarBinary, C::Binary(None)),
+        (SqlType::Image, C::Binary(None)),
+        (SqlType::Xml, C::Xml(None)),
+        (SqlType::Char, C::String(None)),
+        (SqlType::VarChar, C::String(None)),
+        (SqlType::NChar, C::String(None)),
+        (SqlType::NVarChar, C::String(None)),
+        (SqlType::Text, C::String(None)),
+        (SqlType::NText, C::String(None)),
+    ] {
+        let value = DataValue::TypedNull(ty);
+        assert_eq!(tds_driver::ToSql::to_sql(&value), expected, "{ty:?}");
+        assert_eq!(tds_driver::IntoSql::into_sql(value), expected, "{ty:?}");
+    }
+}
+
+#[test]
+fn a_typed_null_with_no_parameter_type_binds_untyped() {
+    let untyped = tds_driver::ToSql::to_sql(&DataValue::Null);
+    for ty in [SqlType::Null, SqlType::Udt, SqlType::Variant] {
+        assert_eq!(
+            tds_driver::ToSql::to_sql(&DataValue::TypedNull(ty)),
+            untyped,
+            "{ty:?}"
+        );
+    }
+}
+
+#[test]
 fn null_binds_as_an_untyped_int() {
     // Documented limitation: an untyped NULL goes out as a NULL int.
     assert!(matches!(

@@ -39,13 +39,24 @@ fn null_reads_as_none() {
 }
 
 #[test]
+fn a_typed_null_reads_as_none() {
+    let null = DataValue::TypedNull(SqlType::Int);
+    assert!(null.is_null());
+    assert_eq!(null.type_name(), "Null");
+    assert_eq!(get::<Option<i32>>(null.clone()).unwrap(), None);
+    assert_eq!(get::<Option<String>>(null).unwrap(), None);
+}
+
+#[test]
 fn null_into_non_optional_is_an_error() {
-    let err = get::<i32>(DataValue::Null).unwrap_err();
-    assert!(matches!(err, Error::Conversion { .. }));
-    assert_eq!(
-        err.to_string(),
-        "cannot convert column 'col' from Null to i32"
-    );
+    for null in [DataValue::Null, DataValue::TypedNull(SqlType::Int)] {
+        let err = get::<i32>(null).unwrap_err();
+        assert!(matches!(err, Error::Conversion { .. }));
+        assert_eq!(
+            err.to_string(),
+            "cannot convert column 'col' from Null to i32"
+        );
+    }
 }
 
 #[test]

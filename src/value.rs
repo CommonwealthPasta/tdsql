@@ -37,15 +37,20 @@ pub enum DataValue {
     DateTime(NaiveDateTime),
     /// `datetimeoffset`
     DateTimeOffset(DateTime<FixedOffset>),
-    /// SQL `NULL`.
+    /// SQL `NULL` of no particular type, which is how every `NULL` reads.
     #[default]
     Null,
+    /// SQL `NULL` bound as the given type.
+    ///
+    /// A `NULL` parameter still has a type, and SQL Server checks it: a `NULL`
+    /// `int` cannot go into a `datetimeoffset` column.
+    TypedNull(SqlType),
 }
 
 impl DataValue {
-    /// Whether this value is SQL `NULL`.
+    /// Whether this value is SQL `NULL`, typed or not.
     pub fn is_null(&self) -> bool {
-        matches!(self, DataValue::Null)
+        matches!(self, DataValue::Null | DataValue::TypedNull(_))
     }
 
     /// The name of the variant, used in conversion error messages.
@@ -65,12 +70,13 @@ impl DataValue {
             DataValue::Time(_) => "Time",
             DataValue::DateTime(_) => "DateTime",
             DataValue::DateTimeOffset(_) => "DateTimeOffset",
-            DataValue::Null => "Null",
+            DataValue::Null | DataValue::TypedNull(_) => "Null",
         }
     }
 }
 
-/// The SQL Server type of a column, as reported by the server.
+/// The SQL Server type of a column, as reported by the server, or of a
+/// [`DataValue::TypedNull`] parameter.
 ///
 /// This mirrors the TDS type tags. It replaces the previous stringly-typed
 /// `sql_type: String`, which exposed the driver's `Debug` output as a public
@@ -340,7 +346,7 @@ fn mismatch<T>(value: &DataValue, column: &str, target: &'static str) -> Result<
 impl<T: FromSql> FromSql for Option<T> {
     fn from_sql(value: &DataValue, column: &str) -> Result<Self> {
         match value {
-            DataValue::Null => Ok(None),
+            v if v.is_null() => Ok(None),
             other => T::from_sql(other, column).map(Some),
         }
     }

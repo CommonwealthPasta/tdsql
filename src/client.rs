@@ -54,9 +54,45 @@ impl tds_driver::ToSql for DataValue {
             DataValue::Time(v) => v.to_sql(),
             DataValue::DateTime(v) => v.to_sql(),
             DataValue::DateTimeOffset(v) => v.to_sql(),
-            // An untyped NULL. SQL Server coerces this for most targets; bind a
-            // typed `Option<T>` when the column needs a specific type.
             DataValue::Null => C::I32(None),
+            DataValue::TypedNull(ty) => typed_null(*ty),
+        }
+    }
+}
+
+/// A `NULL` parameter declared as `ty`.
+fn typed_null(ty: SqlType) -> tds_driver::ColumnData<'static> {
+    use tds_driver::ColumnData as C;
+    match ty {
+        SqlType::Bit | SqlType::BitN => C::Bit(None),
+        SqlType::TinyInt => C::U8(None),
+        SqlType::SmallInt => C::I16(None),
+        SqlType::Int => C::I32(None),
+        // `IntN` is any nullable integer, and `bigint` holds every width.
+        SqlType::BigInt | SqlType::IntN => C::I64(None),
+        SqlType::Real => C::F32(None),
+        SqlType::Float | SqlType::FloatN => C::F64(None),
+        SqlType::Decimal | SqlType::Numeric | SqlType::Money | SqlType::SmallMoney => {
+            C::Numeric(None)
+        }
+        SqlType::Guid => C::Guid(None),
+        SqlType::Date => C::Date(None),
+        SqlType::Time => C::Time(None),
+        SqlType::DateTime | SqlType::DateTimeN => C::DateTime(None),
+        SqlType::SmallDateTime => C::SmallDateTime(None),
+        SqlType::DateTime2 => C::DateTime2(None),
+        SqlType::DateTimeOffset => C::DateTimeOffset(None),
+        SqlType::Binary | SqlType::VarBinary | SqlType::Image => C::Binary(None),
+        SqlType::Xml => C::Xml(None),
+        SqlType::Char
+        | SqlType::VarChar
+        | SqlType::NChar
+        | SqlType::NVarChar
+        | SqlType::Text
+        | SqlType::NText => C::String(None),
+        // No parameter type of their own.
+        SqlType::Null | SqlType::Udt | SqlType::Variant => {
+            tds_driver::ToSql::to_sql(&DataValue::Null)
         }
     }
 }
