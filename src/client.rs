@@ -1169,7 +1169,10 @@ impl Client {
     /// Run a statement that returns no rows, and report how many rows it
     /// affected.
     ///
-    /// If the batch holds several statements, the counts are summed.
+    /// If the batch holds several statements, the counts are summed. A
+    /// statement run under `SET NOCOUNT ON`, as most stored procedures are,
+    /// reports no count at all, so the total is `0` whatever it changed;
+    /// rows a trigger changes are counted along with the statement's own.
     ///
     /// With no parameters the SQL is sent as a plain batch, so a `SET` option
     /// or `BEGIN TRAN` takes effect on the session, as it would from `batch`.
