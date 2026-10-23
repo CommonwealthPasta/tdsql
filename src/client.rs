@@ -1052,10 +1052,11 @@ impl Client {
         }
     }
 
-    /// Run a query and read the first column of the first row.
+    /// Run a query that returns one row, and read its first column.
     ///
     /// Use `Option<T>` as `T` to accept a `NULL`. Fails with
-    /// [`Error::UnexpectedRowCount`] if the query returns no rows.
+    /// [`Error::UnexpectedRowCount`] unless the query returns exactly one row,
+    /// as [`query_one`](Self::query_one) does.
     pub async fn query_scalar<T: FromSql>(
         &mut self,
         sql: &str,
