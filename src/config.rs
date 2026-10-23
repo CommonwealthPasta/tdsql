@@ -195,9 +195,8 @@ impl Config {
                 if *trust_cert {
                     cfg.trust_cert();
                 }
-                if let Some(name) = application_name {
-                    cfg.application_name(name);
-                }
+                // The driver would otherwise report its own name.
+                cfg.application_name(application_name.as_deref().unwrap_or("tdsql"));
                 Ok(cfg)
             }
         }

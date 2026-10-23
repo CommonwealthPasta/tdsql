@@ -674,3 +674,17 @@ async fn wide_decimals_read_when_their_trailing_zeros_make_them_fit() {
     assert_eq!(row.get::<Decimal, _>("ratio"), Decimal::new(5, 1));
     assert_eq!(row.get::<Decimal, _>("frac"), Decimal::ZERO);
 }
+
+#[tokio::test]
+#[ignore]
+async fn the_application_name_is_tdsql_unless_set() {
+    let mut client = connect().await;
+    let name: String = client.query_scalar("SELECT APP_NAME()", &[]).await.unwrap();
+    assert_eq!(name, "tdsql");
+
+    let mut named = Client::connect(&test_config().application_name("billing"))
+        .await
+        .unwrap();
+    let name: String = named.query_scalar("SELECT APP_NAME()", &[]).await.unwrap();
+    assert_eq!(name, "billing");
+}
