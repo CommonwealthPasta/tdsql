@@ -8,11 +8,11 @@
 //! cargo test -- --ignored
 //! ```
 
-use chrono::{DateTime, NaiveDate, NaiveTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
-use tdsql::{Client, Command, Config, DataValue, Error, SqlType};
+use tdsql::{Client, Command, Config, DataValue, Error, SqlType, ToSql};
 
 fn test_config() -> Config {
     Config::new()
@@ -284,6 +284,70 @@ async fn a_typed_null_goes_into_and_compares_with_a_column_of_its_type() {
         }
         ddl(&mut client, "DROP TABLE #n").await;
     }
+}
+
+#[tokio::test]
+#[ignore]
+async fn none_goes_into_and_compares_with_a_column_of_its_type() {
+    let mut client = connect().await;
+    let nones: [(&str, &dyn ToSql); 17] = [
+        ("tinyint", &None::<u8>),
+        ("smallint", &None::<i16>),
+        ("int", &None::<i32>),
+        ("bigint", &None::<i64>),
+        ("real", &None::<f32>),
+        ("float", &None::<f64>),
+        ("bit", &None::<bool>),
+        ("decimal(10, 2)", &None::<Decimal>),
+        ("nvarchar(10)", &None::<String>),
+        ("varchar(10)", &None::<&str>),
+        ("varbinary(10)", &None::<Vec<u8>>),
+        ("varbinary(max)", &None::<&[u8]>),
+        ("uniqueidentifier", &None::<Uuid>),
+        ("date", &None::<NaiveDate>),
+        ("time", &None::<NaiveTime>),
+        ("datetime2", &None::<NaiveDateTime>),
+        ("datetimeoffset", &None::<DateTime<Utc>>),
+    ];
+    for (column, none) in nones {
+        ddl(&mut client, &format!("CREATE TABLE #n (c {column})")).await;
+        client
+            .execute("INSERT INTO #n (c) VALUES (@P1)", &[none])
+            .await
+            .unwrap_or_else(|e| panic!("inserting None into {column}: {e}"));
+        let row = client
+            .query_one(
+                "SELECT COUNT(*) AS n, SUM(CASE WHEN c = @P1 THEN 1 ELSE 0 END) AS eq \
+                 FROM #n WHERE c IS NULL",
+                &[none],
+            )
+            .await
+            .unwrap_or_else(|e| panic!("comparing {column} with None: {e}"));
+        assert_eq!(row.get::<i32, _>("n"), 1, "{column}");
+        assert_eq!(row.get::<i32, _>("eq"), 0, "{column}");
+        ddl(&mut client, "DROP TABLE #n").await;
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_optional_string_filter_leaves_other_rows_alone() {
+    // `int` outranks `varchar`, so an `int` NULL here would convert every `s`
+    // to int and fail on 'abc'.
+    let mut client = connect().await;
+    ddl(
+        &mut client,
+        "CREATE TABLE #f (s varchar(10)); INSERT INTO #f VALUES ('abc'), ('def')",
+    )
+    .await;
+    let n: i32 = client
+        .query_scalar(
+            "SELECT COUNT(*) FROM #f WHERE s = COALESCE(@P1, s)",
+            &[&None::<String>],
+        )
+        .await
+        .unwrap();
+    assert_eq!(n, 2);
 }
 
 #[tokio::test]

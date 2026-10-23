@@ -172,7 +172,8 @@ impl From<tds_driver::ColumnType> for SqlType {
 /// A Rust value that can be bound as a SQL parameter.
 ///
 /// Implemented for the primitive types, `chrono` date/time types, [`Decimal`],
-/// [`Uuid`], and `Option<T>` for any `T: ToSql` (binding SQL `NULL`).
+/// [`Uuid`], and `Option<T>` for any `T: ToSql`, whose `None` binds a `NULL`
+/// of `T`'s [`null_type`](ToSql::null_type).
 ///
 /// `DateTime<Tz>` is implemented for *any* chrono time zone -- [`Utc`],
 /// [`Local`], [`FixedOffset`], or a `chrono_tz::Tz` -- so an aware timestamp
@@ -181,6 +182,26 @@ impl From<tds_driver::ColumnType> for SqlType {
 pub trait ToSql: Send + Sync {
     /// Convert to the dynamic value that gets sent to the server.
     fn to_value(&self) -> DataValue;
+
+    /// The type `None::<Self>` binds as.
+    ///
+    /// A `NULL` parameter still has a type, and SQL Server checks it against
+    /// the column, so `None::<NaiveDate>` binds as a `date`. The default,
+    /// [`SqlType::Null`], is an untyped `NULL`; override it on your own types.
+    fn null_type() -> SqlType
+    where
+        Self: Sized,
+    {
+        SqlType::Null
+    }
+}
+
+/// A `NULL` bound as `ty`, which is untyped for [`SqlType::Null`].
+fn null_of(ty: SqlType) -> DataValue {
+    match ty {
+        SqlType::Null => DataValue::Null,
+        ty => DataValue::TypedNull(ty),
+    }
 }
 
 impl ToSql for DataValue {
@@ -189,7 +210,39 @@ impl ToSql for DataValue {
     }
 }
 
-impl<T: ToSql + ?Sized> ToSql for &T {
+// Separate impls for the unsized referents, since `null_type` needs a sized
+// `T` to ask.
+impl<T: ToSql> ToSql for &T {
+    fn to_value(&self) -> DataValue {
+        (**self).to_value()
+    }
+
+    fn null_type() -> SqlType {
+        T::null_type()
+    }
+}
+
+impl ToSql for &str {
+    fn to_value(&self) -> DataValue {
+        (**self).to_value()
+    }
+
+    fn null_type() -> SqlType {
+        SqlType::NVarChar
+    }
+}
+
+impl ToSql for &[u8] {
+    fn to_value(&self) -> DataValue {
+        (**self).to_value()
+    }
+
+    fn null_type() -> SqlType {
+        SqlType::VarBinary
+    }
+}
+
+impl ToSql for &dyn ToSql {
     fn to_value(&self) -> DataValue {
         (**self).to_value()
     }
@@ -199,33 +252,40 @@ impl<T: ToSql> ToSql for Option<T> {
     fn to_value(&self) -> DataValue {
         match self {
             Some(v) => v.to_value(),
-            None => DataValue::Null,
+            None => null_of(T::null_type()),
         }
+    }
+
+    fn null_type() -> SqlType {
+        T::null_type()
     }
 }
 
 macro_rules! impl_to_sql {
-    ($($t:ty => $variant:ident),* $(,)?) => {
+    ($($t:ty => $variant:ident as $null:ident),* $(,)?) => {
         $(impl ToSql for $t {
             fn to_value(&self) -> DataValue { DataValue::$variant(self.clone()) }
+            fn null_type() -> SqlType { SqlType::$null }
         })*
     };
 }
 
+// Each `NULL` is declared as the type a value would be: a string goes as
+// `nvarchar`, a `NaiveDateTime` as `datetime2`.
 impl_to_sql! {
-    u8 => TinyInt,
-    i16 => SmallInt,
-    i32 => Int,
-    i64 => BigInt,
-    f64 => Float,
-    bool => Bool,
-    Decimal => Decimal,
-    String => Text,
-    Vec<u8> => Binary,
-    Uuid => Guid,
-    NaiveDate => Date,
-    NaiveTime => Time,
-    NaiveDateTime => DateTime,
+    u8 => TinyInt as TinyInt,
+    i16 => SmallInt as SmallInt,
+    i32 => Int as Int,
+    i64 => BigInt as BigInt,
+    f64 => Float as Float,
+    bool => Bool as Bit,
+    Decimal => Decimal as Decimal,
+    String => Text as NVarChar,
+    Vec<u8> => Binary as VarBinary,
+    Uuid => Guid as Guid,
+    NaiveDate => Date as Date,
+    NaiveTime => Time as Time,
+    NaiveDateTime => DateTime as DateTime2,
 }
 
 /// Any time-zone-aware timestamp binds as `datetimeoffset`.
@@ -239,6 +299,10 @@ where
 {
     fn to_value(&self) -> DataValue {
         DataValue::DateTimeOffset(self.fixed_offset())
+    }
+
+    fn null_type() -> SqlType {
+        SqlType::DateTimeOffset
     }
 }
 
@@ -257,6 +321,10 @@ impl ToSql for [u8] {
 impl ToSql for f32 {
     fn to_value(&self) -> DataValue {
         DataValue::Float(*self as f64)
+    }
+
+    fn null_type() -> SqlType {
+        SqlType::Float
     }
 }
 
@@ -309,12 +377,13 @@ impl From<f32> for DataValue {
     }
 }
 
-/// Binding an `Option` sends SQL `NULL` for `None`.
-impl<T: Into<DataValue>> From<Option<T>> for DataValue {
+/// Binding an `Option` sends SQL `NULL` for `None`, typed as
+/// [`ToSql::null_type`].
+impl<T: Into<DataValue> + ToSql> From<Option<T>> for DataValue {
     fn from(v: Option<T>) -> Self {
         match v {
             Some(v) => v.into(),
-            None => DataValue::Null,
+            None => null_of(T::null_type()),
         }
     }
 }

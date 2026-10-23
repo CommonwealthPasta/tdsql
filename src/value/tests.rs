@@ -78,14 +78,68 @@ fn binds_native_types() {
 
 #[test]
 fn binds_option_as_null() {
-    assert_eq!(None::<i32>.to_value(), DataValue::Null);
+    assert_eq!(None::<i32>.to_value(), DataValue::TypedNull(SqlType::Int));
     assert_eq!(Some(3i32).to_value(), DataValue::Int(3));
 }
 
 #[test]
 fn from_option_yields_null() {
-    assert_eq!(DataValue::from(None::<i32>), DataValue::Null);
+    assert_eq!(
+        DataValue::from(None::<i32>),
+        DataValue::TypedNull(SqlType::Int)
+    );
     assert_eq!(DataValue::from(Some(3i32)), DataValue::Int(3));
+}
+
+/// `None::<T>` and `DataValue::from(None::<T>)` for each `T`, which must agree.
+fn nones<T: ToSql + Into<DataValue>>() -> (DataValue, DataValue) {
+    (None::<T>.to_value(), DataValue::from(None::<T>))
+}
+
+#[test]
+fn none_is_a_null_of_its_type() {
+    for ((by_to_sql, by_from), ty) in [
+        (nones::<u8>(), SqlType::TinyInt),
+        (nones::<i16>(), SqlType::SmallInt),
+        (nones::<i32>(), SqlType::Int),
+        (nones::<i64>(), SqlType::BigInt),
+        (nones::<f32>(), SqlType::Float),
+        (nones::<f64>(), SqlType::Float),
+        (nones::<bool>(), SqlType::Bit),
+        (nones::<Decimal>(), SqlType::Decimal),
+        (nones::<String>(), SqlType::NVarChar),
+        (nones::<&str>(), SqlType::NVarChar),
+        (nones::<Vec<u8>>(), SqlType::VarBinary),
+        (nones::<&[u8]>(), SqlType::VarBinary),
+        (nones::<Uuid>(), SqlType::Guid),
+        (nones::<NaiveDate>(), SqlType::Date),
+        (nones::<NaiveTime>(), SqlType::Time),
+        (nones::<NaiveDateTime>(), SqlType::DateTime2),
+        (nones::<DateTime<Utc>>(), SqlType::DateTimeOffset),
+        (nones::<DateTime<FixedOffset>>(), SqlType::DateTimeOffset),
+        (nones::<Option<i32>>(), SqlType::Int),
+    ] {
+        assert_eq!(by_to_sql, DataValue::TypedNull(ty), "{ty:?}");
+        assert_eq!(by_from, DataValue::TypedNull(ty), "{ty:?}");
+    }
+    // Through a reference, too.
+    assert_eq!(
+        None::<&NaiveDate>.to_value(),
+        DataValue::TypedNull(SqlType::Date)
+    );
+}
+
+#[test]
+fn none_of_a_type_without_a_null_type_is_untyped() {
+    struct Opaque;
+    impl ToSql for Opaque {
+        fn to_value(&self) -> DataValue {
+            DataValue::Int(1)
+        }
+    }
+    assert_eq!(None::<Opaque>.to_value(), DataValue::Null);
+    assert_eq!(None::<DataValue>.to_value(), DataValue::Null);
+    assert_eq!(None::<&dyn ToSql>.to_value(), DataValue::Null);
 }
 
 #[test]

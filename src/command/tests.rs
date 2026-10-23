@@ -1,4 +1,5 @@
 use super::*;
+use crate::SqlType;
 
 fn text_sql(cmd: &Command) -> String {
     match cmd.prepare() {
@@ -170,7 +171,10 @@ fn params_binds_several_at_once() {
 #[test]
 fn binds_null_from_none() {
     let cmd = Command::query("SELECT @note").param("note", None::<String>);
-    assert_eq!(cmd.parameters()[0].value, DataValue::Null);
+    assert_eq!(
+        cmd.parameters()[0].value,
+        DataValue::TypedNull(SqlType::NVarChar)
+    );
 }
 
 #[test]
