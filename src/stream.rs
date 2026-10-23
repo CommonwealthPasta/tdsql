@@ -64,7 +64,9 @@ pub(crate) enum Streamed {
 ///
 /// Dropping the stream before the end cancels the query on the server, and
 /// the connection is ready for the next statement as soon as the server has
-/// confirmed. Statements after the `SELECT` in the same batch don't run. See
+/// confirmed. A query still producing rows is stopped there, along with
+/// whatever follows it in the batch. A result small enough to have been sent
+/// whole was over before the cancel arrived, so the rest of its batch ran. See
 /// [Cancelling](crate::Client#cancelling).
 pub struct RowStream<'a> {
     columns: Arc<[Column]>,

@@ -183,7 +183,9 @@ open on the server until you're done with it, and keeps any locks it has taken.
 
 You can drop the stream early. That cancels the query on the server, and the
 connection is ready for the next statement as soon as the server has confirmed.
-Statements after the `SELECT` in the same batch don't run.
+A query still producing rows stops there, along with whatever follows it in the
+batch. A small result was over before the cancel arrived, so the rest of its
+batch ran.
 
 In the blocking client, `query_stream` returns an `Iterator`.
 
