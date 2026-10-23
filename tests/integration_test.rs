@@ -85,6 +85,21 @@ async fn named_params_in_a_text_batch() {
 
 #[tokio::test]
 #[ignore]
+async fn named_params_bind_by_name_whatever_their_order_or_case() {
+    let mut client = connect().await;
+    let cmd = Command::query("SELECT @P1 AS a, @Name AS n, @P2 AS b")
+        .param("P2", 20)
+        .param("name", "y")
+        .param("P1", 10);
+
+    let ds = client.query_dataset(&cmd).await.unwrap();
+    assert_eq!(ds[0][0].get::<i32, _>("a"), 10);
+    assert_eq!(ds[0][0].get::<String, _>("n"), "y");
+    assert_eq!(ds[0][0].get::<i32, _>("b"), 20);
+}
+
+#[tokio::test]
+#[ignore]
 async fn non_ascii_sql_survives_parameter_rewriting() {
     let mut client = connect().await;
     let cmd = Command::query("SELECT N'café' AS c, @id AS id").param("id", 1);

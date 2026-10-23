@@ -158,17 +158,9 @@ impl Command {
                     .collect(),
             },
             CommandType::Text => {
-                let mut sql = self.text.clone();
-                for (i, p) in self.parameters.iter().enumerate() {
-                    let bare = p.bare_name();
-                    // Already positional (`@P1`)? Leave it alone.
-                    if is_ordinal_placeholder(bare) {
-                        continue;
-                    }
-                    sql = replace_param_token(&sql, &format!("@{bare}"), &format!("@P{}", i + 1));
-                }
+                let names: Vec<&str> = self.parameters.iter().map(|p| p.bare_name()).collect();
                 Prepared::Text {
-                    sql,
+                    sql: rewrite_placeholders(&self.text, &names),
                     params: self.parameters.iter().map(|p| p.value.clone()).collect(),
                 }
             }
@@ -176,12 +168,13 @@ impl Command {
     }
 }
 
-/// Whether `name` is already an ordinal placeholder such as `P1`.
-fn is_ordinal_placeholder(name: &str) -> bool {
-    match name.strip_prefix('P') {
-        Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
-        None => false,
-    }
+/// The parameter in `names` that the placeholder `@ident` refers to.
+///
+/// Case-insensitive, as T-SQL identifiers are under the usual collations, so
+/// `@Id` in the SQL finds a parameter bound as `id`.
+fn placeholder_index(ident: &str, names: &[&str]) -> Option<usize> {
+    let ident = ident.to_lowercase();
+    names.iter().position(|n| n.to_lowercase() == ident)
 }
 
 /// The lexical regions of a T-SQL batch. A `@name` token is only a placeholder
@@ -208,18 +201,22 @@ fn is_ident_continue(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '@' || c == '$' || c == '#'
 }
 
-/// Replace every occurrence of `needle` that stands alone as an identifier and
-/// sits in executable SQL.
+/// Rewrite every `@name` placeholder in executable SQL to the position of
+/// `name` in `names`, as `@P1..@Pn`.
+///
+/// One pass, with every placeholder looked up rather than each name replaced
+/// in turn, so a parameter named `P2` bound first becomes `@P1`, and a
+/// replacement can never be mistaken for a placeholder still to come. A
+/// `@name` that is bound to nothing is left as it is.
 ///
 /// Two things are skipped. Identifier boundaries on *both* sides, so `@id`
 /// matches neither `@id2` nor `@@id`. And whole non-SQL regions — string
 /// literals, quoted and bracketed identifiers, and comments — so binding `id`
-/// no longer rewrites `'@id'` or `'email@id.com'` into the placeholder.
+/// does not rewrite `'@id'` or `'email@id.com'` into the placeholder.
 ///
 /// Copies whole UTF-8 characters, so non-ASCII SQL (`N'café'`) survives intact.
-fn replace_param_token(haystack: &str, needle: &str, replacement: &str) -> String {
+fn rewrite_placeholders(haystack: &str, names: &[&str]) -> String {
     let bytes = haystack.as_bytes();
-    let nlen = needle.len();
     let mut out = String::with_capacity(haystack.len());
     let mut region = Region::Sql;
     // The last character written, for the left-hand identifier boundary.
@@ -263,20 +260,24 @@ fn replace_param_token(haystack: &str, needle: &str, replacement: &str) -> Strin
                     _ => {}
                 }
 
-                // `starts_with` comes first: only once it matches is `i + nlen`
-                // known to land on a character boundary, so the slice below
-                // cannot split a multi-byte character.
-                if bytes[i..].starts_with(needle.as_bytes())
-                    && prev.is_none_or(|c| !is_ident_continue(c))
-                    && haystack[i + nlen..]
-                        .chars()
-                        .next()
-                        .is_none_or(|c| !is_ident_continue(c))
-                {
-                    out.push_str(replacement);
-                    prev = replacement.chars().last();
-                    i += nlen;
-                    continue;
+                // A `@` at an identifier boundary starts a placeholder; the
+                // identifier runs to the next character that cannot continue
+                // one, which keeps `@id` apart from `@id2`.
+                if bytes[i] == b'@' && prev.is_none_or(|c| !is_ident_continue(c)) {
+                    let ident: &str = {
+                        let rest = &haystack[i + 1..];
+                        let end = rest
+                            .find(|c: char| !is_ident_continue(c))
+                            .unwrap_or(rest.len());
+                        &rest[..end]
+                    };
+                    if let Some(index) = placeholder_index(ident, names) {
+                        let replacement = format!("@P{}", index + 1);
+                        out.push_str(&replacement);
+                        prev = replacement.chars().last();
+                        i += 1 + ident.len();
+                        continue;
+                    }
                 }
             }
             Region::String => {

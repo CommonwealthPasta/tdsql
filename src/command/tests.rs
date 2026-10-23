@@ -38,6 +38,44 @@ fn leaves_existing_ordinals_alone() {
 }
 
 #[test]
+fn ordinal_names_follow_binding_order() {
+    // Regression: `@P1`/`@P2` used to be left alone while the values went out
+    // in binding order, so each read the other's value.
+    let cmd = Command::query("SELECT @P1 AS a, @P2 AS b")
+        .param("P2", 20)
+        .param("P1", 10);
+    assert_eq!(text_sql(&cmd), "SELECT @P2 AS a, @P1 AS b");
+}
+
+#[test]
+fn a_name_and_an_ordinal_do_not_collide() {
+    // Regression: renaming `@name` to `@P2` used to merge it with the `@P2`
+    // already in the SQL, so one value was lost.
+    let cmd = Command::query("SELECT @name AS n, @P2 AS p")
+        .param("P2", "x")
+        .param("name", "y");
+    assert_eq!(text_sql(&cmd), "SELECT @P2 AS n, @P1 AS p");
+}
+
+#[test]
+fn placeholder_names_are_case_insensitive() {
+    let cmd = Command::query("SELECT @Id, @ID, @id").param("id", 1);
+    assert_eq!(text_sql(&cmd), "SELECT @P1, @P1, @P1");
+}
+
+#[test]
+fn an_unbound_placeholder_is_left_alone() {
+    let cmd = Command::query("SELECT @id, @other").param("id", 1);
+    assert_eq!(text_sql(&cmd), "SELECT @P1, @other");
+}
+
+#[test]
+fn a_placeholder_prefix_of_a_longer_one_is_left_alone() {
+    let cmd = Command::query("SELECT @P1, @P10").param("P1", 1);
+    assert_eq!(text_sql(&cmd), "SELECT @P1, @P10");
+}
+
+#[test]
 fn preserves_non_ascii_sql() {
     // Regression: the previous rewriter cast each byte to a `char`, turning
     // multi-byte UTF-8 into mojibake.
@@ -187,13 +225,4 @@ fn bare_name_strips_at() {
 fn at_name_adds_exactly_one_at() {
     assert_eq!(Parameter::new("@id", 1).at_name(), "@id");
     assert_eq!(Parameter::new("id", 1).at_name(), "@id");
-}
-
-#[test]
-fn ordinal_placeholder_detection() {
-    assert!(is_ordinal_placeholder("P1"));
-    assert!(is_ordinal_placeholder("P42"));
-    assert!(!is_ordinal_placeholder("P"));
-    assert!(!is_ordinal_placeholder("Price"));
-    assert!(!is_ordinal_placeholder("id"));
 }

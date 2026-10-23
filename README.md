@@ -244,7 +244,8 @@ let affected = client.execute_command(&cmd).await?;
 ```
 
 Text queries can use named parameters too. They're rewritten into the
-positional form the protocol expects:
+positional form the protocol expects. Names match whatever their case, so
+`@Id` in the SQL finds a parameter bound as `id`:
 
 ```rust,no_run
 # use tdsql::{Client, Command};
