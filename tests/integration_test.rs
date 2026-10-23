@@ -288,6 +288,35 @@ async fn a_typed_null_goes_into_and_compares_with_a_column_of_its_type() {
 
 #[tokio::test]
 #[ignore]
+async fn an_untyped_null_goes_into_any_column_but_a_binary_one() {
+    let mut client = connect().await;
+    let lobs = [
+        ("xml", SqlType::Xml),
+        ("text", SqlType::Text),
+        ("ntext", SqlType::NText),
+        ("image", SqlType::Image),
+    ];
+    for &(column, ty) in NULL_TARGETS.iter().chain(&lobs) {
+        ddl(&mut client, &format!("CREATE TABLE #n (c {column})")).await;
+        let result = client
+            .execute("INSERT INTO #n (c) VALUES (@P1)", &[&DataValue::Null])
+            .await;
+        let binary = matches!(ty, SqlType::Binary | SqlType::VarBinary | SqlType::Image);
+        match result {
+            Ok(_) => assert!(!binary, "{column} took an nvarchar NULL"),
+            // 257 "Implicit conversion ... is not allowed", or 206 "Operand
+            // type clash" for image.
+            Err(e) => assert!(
+                binary && matches!(e.code(), Some(206 | 257)),
+                "{column}: {e}"
+            ),
+        }
+        ddl(&mut client, "DROP TABLE #n").await;
+    }
+}
+
+#[tokio::test]
+#[ignore]
 async fn none_goes_into_and_compares_with_a_column_of_its_type() {
     let mut client = connect().await;
     let nones: [(&str, &dyn ToSql); 17] = [

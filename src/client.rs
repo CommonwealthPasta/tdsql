@@ -54,7 +54,9 @@ impl tds_driver::ToSql for DataValue {
             DataValue::Time(v) => v.to_sql(),
             DataValue::DateTime(v) => v.to_sql(),
             DataValue::DateTimeOffset(v) => v.to_sql(),
-            DataValue::Null => C::I32(None),
+            // With no type to go on, `nvarchar`: SQL Server converts it
+            // implicitly to every column type but the binary ones.
+            DataValue::Null => C::String(None),
             DataValue::TypedNull(ty) => typed_null(*ty),
         }
     }

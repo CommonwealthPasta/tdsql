@@ -150,10 +150,6 @@ fn a_typed_null_with_no_parameter_type_binds_untyped() {
 }
 
 #[test]
-fn null_binds_as_an_untyped_int() {
-    // Documented limitation: an untyped NULL goes out as a NULL int.
-    assert!(matches!(
-        tds_driver::ToSql::to_sql(&DataValue::Null),
-        C::I32(None)
-    ));
+fn an_untyped_null_binds_as_nvarchar() {
+    assert_eq!(tds_driver::ToSql::to_sql(&DataValue::Null), C::String(None));
 }
