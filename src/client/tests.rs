@@ -192,3 +192,49 @@ fn a_wide_numeric_reads_once_its_trailing_zeros_go() {
 fn an_untyped_null_binds_as_nvarchar() {
     assert_eq!(tds_driver::ToSql::to_sql(&DataValue::Null), C::String(None));
 }
+
+#[test]
+fn legacy_datetime_rounds_to_the_nearest_tick() {
+    use chrono::NaiveDate;
+
+    let at = |ms: u32| {
+        NaiveDate::from_ymd_opt(2024, 5, 1)
+            .unwrap()
+            .and_hms_milli_opt(10, 0, 0, ms)
+            .unwrap()
+    };
+    let ticks = |dt| to_legacy_datetime(dt).seconds_fragments();
+    // 10:00:00 is 36,000 s, 300 ticks each.
+    assert_eq!(ticks(at(0)), 10_800_000);
+    // .003 is tick 1, as the server stores it (.0033333); truncation would
+    // give tick 0 and a value that matches nothing.
+    assert_eq!(ticks(at(3)), 10_800_001);
+    assert_eq!(ticks(at(7)), 10_800_002);
+    assert_eq!(ticks(at(10)), 10_800_003);
+    assert_eq!(ticks(at(997)), 10_800_299);
+    assert_eq!(ticks(at(123)), 10_800_037);
+
+    // Days count from 1900-01-01, either way.
+    let base = NaiveDate::from_ymd_opt(1900, 1, 1).unwrap();
+    assert_eq!(
+        to_legacy_datetime(base.and_hms_opt(0, 0, 0).unwrap()).days(),
+        0
+    );
+    let before = NaiveDate::from_ymd_opt(1899, 12, 31).unwrap();
+    assert_eq!(
+        to_legacy_datetime(before.and_hms_opt(12, 0, 0).unwrap()).days(),
+        -1
+    );
+
+    // The last 100 ns of a day round up into the next one.
+    let end = NaiveDate::from_ymd_opt(2024, 5, 1)
+        .unwrap()
+        .and_hms_nano_opt(23, 59, 59, 999_999_900)
+        .unwrap();
+    let rolled = to_legacy_datetime(end);
+    assert_eq!(
+        rolled.days(),
+        (NaiveDate::from_ymd_opt(2024, 5, 2).unwrap() - base).num_days() as i32
+    );
+    assert_eq!(rolled.seconds_fragments(), 0);
+}

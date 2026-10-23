@@ -7,6 +7,22 @@ use crate::error::{Error, Result};
 /// SqlClient's default `Connect Timeout`.
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The SQL type a `NaiveDateTime` parameter, or a [`DataValue::DateTime`],
+/// is sent as. See [`Config::datetime_parameter_type`].
+///
+/// [`DataValue::DateTime`]: crate::DataValue::DateTime
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum DateTimeParameterType {
+    /// `datetime2(7)`: every value a `NaiveDateTime` can hold, to 100 ns.
+    #[default]
+    DateTime2,
+    /// `datetime`: 1753 to 9999, to 1/300 of a second. For schemas whose
+    /// columns are `datetime`, where a `datetime2` parameter does not
+    /// compare equal to the column's own values.
+    DateTime,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum Source {
     Parts {
@@ -52,6 +68,7 @@ enum Source {
 #[derive(Clone, PartialEq, Eq)]
 pub struct Config {
     source: Source,
+    datetime_parameter_type: DateTimeParameterType,
 }
 
 impl Default for Config {
@@ -74,6 +91,7 @@ impl Config {
                 application_name: None,
                 connect_timeout: Some(DEFAULT_CONNECT_TIMEOUT),
             },
+            datetime_parameter_type: DateTimeParameterType::default(),
         }
     }
 
@@ -84,6 +102,7 @@ impl Config {
     pub fn from_ado_string(s: impl Into<String>) -> Self {
         Self {
             source: Source::Ado(s.into()),
+            datetime_parameter_type: DateTimeParameterType::default(),
         }
     }
 
@@ -91,6 +110,7 @@ impl Config {
     pub fn from_jdbc_string(s: impl Into<String>) -> Self {
         Self {
             source: Source::Jdbc(s.into()),
+            datetime_parameter_type: DateTimeParameterType::default(),
         }
     }
 
@@ -153,6 +173,31 @@ impl Config {
             *t = timeout;
         }
         self
+    }
+
+    /// The SQL type a `NaiveDateTime` parameter is sent as: `datetime2(7)`
+    /// unless set, which holds any value losslessly.
+    ///
+    /// A `datetime` column keeps time to 1/300 s, so `10:00:00.003` is really
+    /// `10:00:00.0033333`, and under database compatibility level 130 or
+    /// later SQL Server converts the column to `datetime2` *exactly* before
+    /// comparing it with a `datetime2` parameter. A value read from the column
+    /// and bound straight back then fails to match its own row; about two
+    /// thirds of `GETDATE()` values do. Set
+    /// [`DateTimeParameterType::DateTime`] for schemas built on `datetime`,
+    /// and such parameters go as `datetime`, rounded to 1/300 s as the column
+    /// is. The trade is precision against `datetime2` columns, which then
+    /// get 1/300 s values too. Microsoft's JDBC driver offers the same choice
+    /// as `datetimeParameterType`. Applies to every source, connection strings
+    /// included.
+    pub fn datetime_parameter_type(mut self, ty: DateTimeParameterType) -> Self {
+        self.datetime_parameter_type = ty;
+        self
+    }
+
+    /// Whether `NaiveDateTime` parameters go as legacy `datetime`.
+    pub(crate) fn legacy_datetime(&self) -> bool {
+        self.datetime_parameter_type == DateTimeParameterType::DateTime
     }
 
     /// Set the application name reported to the server.

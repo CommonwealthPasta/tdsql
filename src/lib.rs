@@ -19,7 +19,7 @@ mod value;
 
 pub use client::Client;
 pub use command::{Command, CommandType, Parameter};
-pub use config::Config;
+pub use config::{Config, DateTimeParameterType};
 pub use dataset::{DataSet, DataTable};
 pub use error::{Error, Result, StatementKind};
 pub use executor::Executor;

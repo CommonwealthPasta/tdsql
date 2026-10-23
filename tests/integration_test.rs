@@ -8,7 +8,7 @@
 //! cargo test -- --ignored
 //! ```
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
@@ -753,4 +753,97 @@ async fn a_parameterless_query_keeps_its_session_changes() {
         .await
         .unwrap();
     assert_eq!(format, "dmy");
+}
+
+#[tokio::test]
+#[ignore]
+async fn datetime_parameters_can_be_sent_as_datetime_for_datetime_columns() {
+    use tdsql::DateTimeParameterType;
+
+    let mut client = connect().await;
+    ddl(
+        &mut client,
+        "IF OBJECT_ID('dbo.tdsql_dt_legacy', 'U') IS NOT NULL DROP TABLE dbo.tdsql_dt_legacy;
+         CREATE TABLE dbo.tdsql_dt_legacy (id INT PRIMARY KEY, created DATETIME NOT NULL, note NVARCHAR(10));
+         INSERT INTO dbo.tdsql_dt_legacy (id, created) VALUES
+           (1, '2024-05-01 10:00:00.000'), (2, '2024-05-01 10:00:00.003'),
+           (3, '2024-05-01 10:00:00.007'), (4, '2024-05-01 10:00:00.997'),
+           (5, '2024-05-01 10:00:00.123')",
+    )
+    .await;
+
+    // The default, datetime2: the column widens exactly to .0033333, so a
+    // value read back does not match its own row (compat level >= 130).
+    let created: NaiveDateTime = client
+        .query_scalar("SELECT created FROM dbo.tdsql_dt_legacy WHERE id = 2", &[])
+        .await
+        .unwrap();
+    let n: i32 = client
+        .query_scalar(
+            "SELECT COUNT(*) FROM dbo.tdsql_dt_legacy WHERE created = @P1",
+            &[&created],
+        )
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "the trap this setting exists for has gone away");
+
+    let mut legacy =
+        Client::connect(&test_config().datetime_parameter_type(DateTimeParameterType::DateTime))
+            .await
+            .unwrap();
+    let rows = legacy
+        .query(
+            "SELECT id, created FROM dbo.tdsql_dt_legacy ORDER BY id",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 5);
+    for row in &rows {
+        let id: i32 = row.get("id");
+        let created: NaiveDateTime = row.get("created");
+        // Positional, through a Command, and in an UPDATE's WHERE clause.
+        let n: i32 = legacy
+            .query_scalar(
+                "SELECT COUNT(*) FROM dbo.tdsql_dt_legacy WHERE created = @P1",
+                &[&created],
+            )
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "row {id} ({created})");
+        let ds = legacy
+            .query_dataset(
+                &Command::query("SELECT COUNT(*) AS n FROM dbo.tdsql_dt_legacy WHERE created = @c")
+                    .param("c", created),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ds[0][0].get::<i32, _>("n"), 1, "row {id} via Command");
+        let touched = legacy
+            .execute(
+                "UPDATE dbo.tdsql_dt_legacy SET note = N'seen' WHERE id = @P1 AND created = @P2",
+                &[&id, &created],
+            )
+            .await
+            .unwrap();
+        assert_eq!(touched, 1, "row {id} UPDATE");
+    }
+
+    // The trade: into a datetime2 column such a parameter carries 1/300 s.
+    let fine = NaiveDate::from_ymd_opt(2024, 5, 1)
+        .unwrap()
+        .and_hms_nano_opt(10, 0, 0, 1_234_500)
+        .unwrap();
+    let stored: NaiveDateTime = legacy
+        .query_scalar("SELECT CAST(@P1 AS datetime2(7))", &[&fine])
+        .await
+        .unwrap();
+    assert_eq!(stored, fine.with_nanosecond(0).unwrap());
+    let stored: NaiveDateTime = client
+        .query_scalar("SELECT CAST(@P1 AS datetime2(7))", &[&fine])
+        .await
+        .unwrap();
+    assert_eq!(stored, fine);
+
+    ddl(&mut client, "DROP TABLE dbo.tdsql_dt_legacy").await;
 }

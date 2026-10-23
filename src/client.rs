@@ -305,7 +305,73 @@ async fn collect_query_stream(mut stream: tds_driver::QueryStream<'_>) -> Result
     Ok(dataset)
 }
 
-fn as_driver_refs(values: &[DataValue]) -> Vec<&dyn tds_driver::ToSql> {
+/// A `NaiveDateTime` as the legacy `datetime` type: days since 1900-01-01 and
+/// 1/300 s ticks, rounded to the nearest tick as the server rounds a literal,
+/// so `10:00:00.003` becomes tick 1 (`.0033333`) and matches a `datetime`
+/// column holding it.
+fn to_legacy_datetime(dt: chrono::NaiveDateTime) -> tds_driver::time::DateTime {
+    use chrono::Timelike;
+
+    let base = chrono::NaiveDate::from_ymd_opt(1900, 1, 1).expect("a valid date");
+    let mut days = (dt.date() - base).num_days();
+    let time = dt.time();
+    let ns =
+        u64::from(time.num_seconds_from_midnight()) * 1_000_000_000 + u64::from(time.nanosecond());
+    let mut ticks = (ns * 3 + 5_000_000) / 10_000_000;
+    // 23:59:59.9999999 rounds up to the next day.
+    if ticks >= 300 * 86_400 {
+        days += 1;
+        ticks -= 300 * 86_400;
+    }
+    tds_driver::time::DateTime::new(days as i32, ticks as u32)
+}
+
+/// A `DataValue::DateTime` sent as `datetime` rather than `datetime2`.
+struct LegacyDateTime(tds_driver::time::DateTime);
+
+impl tds_driver::ToSql for LegacyDateTime {
+    fn to_sql(&self) -> tds_driver::ColumnData<'_> {
+        tds_driver::ColumnData::DateTime(Some(self.0))
+    }
+}
+
+impl tds_driver::IntoSql<'static> for LegacyDateTime {
+    fn into_sql(self) -> tds_driver::ColumnData<'static> {
+        tds_driver::ColumnData::DateTime(Some(self.0))
+    }
+}
+
+/// A parameter as it goes to the driver.
+enum Bound<'a> {
+    Plain(&'a DataValue),
+    Legacy(LegacyDateTime),
+}
+
+impl tds_driver::ToSql for Bound<'_> {
+    fn to_sql(&self) -> tds_driver::ColumnData<'_> {
+        match self {
+            Bound::Plain(v) => v.to_sql(),
+            Bound::Legacy(v) => v.to_sql(),
+        }
+    }
+}
+
+/// The parameters as the connection sends them: with `legacy_datetime`, a
+/// `DataValue::DateTime` goes as `datetime`; see
+/// [`Config::datetime_parameter_type`].
+fn bind(values: &[DataValue], legacy_datetime: bool) -> Vec<Bound<'_>> {
+    values
+        .iter()
+        .map(|v| match v {
+            DataValue::DateTime(dt) if legacy_datetime => {
+                Bound::Legacy(LegacyDateTime(to_legacy_datetime(*dt)))
+            }
+            v => Bound::Plain(v),
+        })
+        .collect()
+}
+
+fn as_driver_refs<'a>(values: &'a [Bound<'a>]) -> Vec<&'a dyn tds_driver::ToSql> {
     values.iter().map(|v| v as &dyn tds_driver::ToSql).collect()
 }
 
@@ -539,7 +605,11 @@ async fn open(mut cfg: tds_driver::Config) -> tds_driver::Result<Driver> {
 /// acknowledge a cancel, the task ends and takes the connection with it, so
 /// every request still queued, and every later one, fails with
 /// [`Error::ConnectionClosed`].
-async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Request>) {
+async fn connection_task(
+    mut driver: Driver,
+    mut rx: mpsc::UnboundedReceiver<Request>,
+    legacy_datetime: bool,
+) {
     // A transaction began at a level other than READ COMMITTED. The level
     // outlives it on the connection (MS-TDS 2.2.6.9).
     let mut level_changed = false;
@@ -577,7 +647,7 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
         match request {
             Request::Query { sql, params, reply } => {
                 let work = async |driver: &mut Driver| {
-                    run_query(driver, &sql, &params)
+                    run_query(driver, &sql, &params, legacy_datetime)
                         .await
                         .map_err(|e| e.with_statement(StatementKind::Query, &sql, params.len()))
                 };
@@ -592,7 +662,7 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 rows,
             } => {
                 let work = async |driver: &mut Driver| {
-                    stream_query(driver, &sql, &params, header, &rows).await
+                    stream_query(driver, &sql, &params, legacy_datetime, header, &rows).await
                 };
                 if cancellable(&mut driver, rows.closed(), work)
                     .await
@@ -607,7 +677,8 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                     let result = if params.is_empty() {
                         driver.simple_execute(&sql).await
                     } else {
-                        let refs = as_driver_refs(&params);
+                        let bound = bind(&params, legacy_datetime);
+                        let refs = as_driver_refs(&bound);
                         driver.execute(&sql, &refs).await
                     };
                     result.map(|r| r.total()).map_err(|e| {
@@ -637,7 +708,7 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
             } => {
                 let count = params.len();
                 let work = async |driver: &mut Driver| {
-                    run_proc_query(driver, &name, params)
+                    run_proc_query(driver, &name, params, legacy_datetime)
                         .await
                         .map_err(|e| e.with_statement(StatementKind::StoredProcedure, &name, count))
                 };
@@ -652,7 +723,7 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
             } => {
                 let count = params.len();
                 let work = async |driver: &mut Driver| {
-                    run_proc_execute(driver, &name, params)
+                    run_proc_execute(driver, &name, params, legacy_datetime)
                         .await
                         .map_err(|e| e.with_statement(StatementKind::StoredProcedure, &name, count))
                 };
@@ -781,17 +852,24 @@ async fn open_query<'a>(
     driver: &'a mut Driver,
     sql: &str,
     params: &[DataValue],
+    legacy_datetime: bool,
 ) -> tds_driver::Result<tds_driver::QueryStream<'a>> {
     if params.is_empty() {
         driver.simple_query(sql.to_string()).await
     } else {
-        let refs = as_driver_refs(params);
+        let bound = bind(params, legacy_datetime);
+        let refs = as_driver_refs(&bound);
         driver.query(sql.to_string(), &refs).await
     }
 }
 
-async fn run_query(driver: &mut Driver, sql: &str, params: &[DataValue]) -> Result<DataSet> {
-    let stream = open_query(driver, sql, params).await?;
+async fn run_query(
+    driver: &mut Driver,
+    sql: &str,
+    params: &[DataValue],
+    legacy_datetime: bool,
+) -> Result<DataSet> {
+    let stream = open_query(driver, sql, params, legacy_datetime).await?;
     collect_query_stream(stream).await
 }
 
@@ -814,6 +892,7 @@ async fn stream_query(
     driver: &mut Driver,
     sql: &str,
     params: &[DataValue],
+    legacy_datetime: bool,
     header: Reply<Arc<[Column]>>,
     rows: &mpsc::Sender<Result<Streamed>>,
 ) {
@@ -825,7 +904,7 @@ async fn stream_query(
     // the connection is clean for the next request.
     let mut failure: Option<Error> = None;
 
-    match open_query(driver, sql, params).await {
+    match open_query(driver, sql, params, legacy_datetime).await {
         Err(e) => failure = Some(e.into()),
         Ok(mut stream) => {
             while let Some(item) = stream.next().await {
@@ -882,10 +961,19 @@ async fn stream_query(
     }
 }
 
-fn build_proc<'a>(name: &str, params: Vec<(String, DataValue)>) -> tds_driver::Command<'a> {
+fn build_proc<'a>(
+    name: &str,
+    params: Vec<(String, DataValue)>,
+    legacy_datetime: bool,
+) -> tds_driver::Command<'a> {
     let mut cmd = tds_driver::Command::new(name.to_string());
     for (pname, value) in params {
-        cmd.bind_param(pname, value);
+        match value {
+            DataValue::DateTime(dt) if legacy_datetime => {
+                cmd.bind_param(pname, LegacyDateTime(to_legacy_datetime(dt)));
+            }
+            value => cmd.bind_param(pname, value),
+        }
     }
     cmd
 }
@@ -894,8 +982,11 @@ async fn run_proc_query(
     driver: &mut Driver,
     name: &str,
     params: Vec<(String, DataValue)>,
+    legacy_datetime: bool,
 ) -> Result<DataSet> {
-    let mut stream = build_proc(name, params).exec(driver).await?;
+    let mut stream = build_proc(name, params, legacy_datetime)
+        .exec(driver)
+        .await?;
 
     let mut dataset = DataSet::new();
     let mut current: Option<(DataTable, Arc<[Column]>)> = None;
@@ -946,8 +1037,11 @@ async fn run_proc_execute(
     driver: &mut Driver,
     name: &str,
     params: Vec<(String, DataValue)>,
+    legacy_datetime: bool,
 ) -> Result<u64> {
-    let mut stream = build_proc(name, params).exec(driver).await?;
+    let mut stream = build_proc(name, params, legacy_datetime)
+        .exec(driver)
+        .await?;
     let mut total = 0u64;
     while let Some(item) = stream.next().await {
         if let tds_driver::CommandItem::RowsAffected(n) = item? {
@@ -1044,7 +1138,7 @@ impl Client {
         })?;
 
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(connection_task(driver, rx));
+        tokio::spawn(connection_task(driver, rx, config.legacy_datetime()));
 
         Ok(Self {
             tx,

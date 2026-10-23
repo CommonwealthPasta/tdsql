@@ -640,6 +640,35 @@ server sent, and both name the same instant.
 directions. They don't store an offset, so treating one as UTC would be a
 guess. Those columns bind from and read as `NaiveDateTime`, and you handle the
 zone yourself: `.naive_utc()` on the way out, `.and_utc()` on the way back in.
+Bind a `DateTime<Local>` or `DateTime<FixedOffset>` into one of them and the
+server stores its wall-clock time in that zone, then compares the column with
+the parameter as UTC, so `WHERE at >= @P1` can miss the row you just wrote.
+
+### `datetime` columns
+
+A `NaiveDateTime` parameter is sent as `datetime2(7)`, which holds any value it
+can carry. The old `datetime` type keeps time to 1/300 of a second, so a column
+showing `10:00:00.003` really holds `10:00:00.0033333`, and since database
+compatibility level 130 SQL Server converts the column to `datetime2` exactly
+before comparing. A value read from a `datetime` column and bound straight back
+then fails to match its own row, which turns an optimistic-concurrency `UPDATE
+... WHERE updated_at = @P2` into "0 rows affected". Roughly two thirds of
+`GETDATE()` values are affected.
+
+For a schema built on `datetime`, send such parameters as `datetime` instead:
+
+```rust
+use tdsql::{Config, DateTimeParameterType};
+
+let config = Config::new()
+    .host("localhost")
+    .auth("sa", "YourStrong!Passw0rd")
+    .datetime_parameter_type(DateTimeParameterType::DateTime);
+```
+
+They are then rounded to 1/300 s as the column is, and compare as expected. The
+trade is that a `datetime2` column written through such a connection gets
+1/300 s values too, which is why `datetime2` stays the default.
 
 ### NULL parameters
 
