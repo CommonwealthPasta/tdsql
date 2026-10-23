@@ -314,3 +314,34 @@ async fn refuses_to_run_inside_an_async_runtime() {
         .expect_err("should refuse to build a runtime inside a runtime");
     assert!(matches!(err, Error::BlockingInAsync), "{err}");
 }
+
+/// A client connected on a plain thread and dropped inside async code must
+/// not panic with "Cannot drop a runtime in a context where blocking is not
+/// allowed".
+#[tokio::test]
+#[ignore]
+async fn dropping_inside_an_async_runtime_is_fine() {
+    let client = std::thread::spawn(|| Client::connect(&test_config()).unwrap())
+        .join()
+        .unwrap();
+    drop(client);
+}
+
+/// Inside `spawn_blocking` a client connected elsewhere works, transaction
+/// and drop included.
+#[tokio::test]
+#[ignore]
+async fn works_inside_spawn_blocking() {
+    let mut client = std::thread::spawn(|| Client::connect(&test_config()).unwrap())
+        .join()
+        .unwrap();
+    let n = tokio::task::spawn_blocking(move || {
+        let mut tx = client.transaction().unwrap();
+        let n: i32 = tx.query_scalar("SELECT 7", &[]).unwrap();
+        tx.commit().unwrap();
+        n
+    })
+    .await
+    .unwrap();
+    assert_eq!(n, 7);
+}

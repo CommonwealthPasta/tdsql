@@ -34,10 +34,14 @@
 //!
 //! # Do not call this from async code
 //!
-//! Each client owns a runtime, and driving a runtime from inside another one
-//! panics. [`Client::connect`] detects that case up front and returns
-//! [`Error::BlockingInAsync`] rather than letting a later call panic. In async
-//! code, use [`tdsql::Client`](crate::Client) directly.
+//! Each client owns a runtime, and driving a runtime from a thread that is
+//! running another one panics. [`Client::connect`] refuses when a Tokio
+//! runtime is current on the calling thread and returns
+//! [`Error::BlockingInAsync`]. That includes a `spawn_blocking` closure, where
+//! the client would in fact work: connect on a thread of your own and move
+//! the client in. The check is made only at connect; a client that is later
+//! *used* inside async code panics as Tokio does. Dropping one there is fine.
+//! In async code, use [`tdsql::Client`](crate::Client) directly.
 
 use tokio::runtime::{Builder, Runtime};
 
@@ -61,12 +65,39 @@ fn build_runtime() -> Result<Runtime> {
         .map_err(Error::Io)
 }
 
+/// The client's runtime, which knows how to go away from inside async code.
+///
+/// Dropping a `Runtime` on a thread that is driving another runtime panics
+/// ("Cannot drop a runtime in a context where blocking is not allowed"), and
+/// a client moved into async code and dropped there is an easy thing to do.
+/// `shutdown_background` is allowed anywhere; it does not wait for the
+/// connection task, which the dropped `inner` client has already told to stop.
+struct OwnedRuntime(Option<Runtime>);
+
+impl std::ops::Deref for OwnedRuntime {
+    type Target = Runtime;
+
+    fn deref(&self) -> &Runtime {
+        self.0.as_ref().expect("taken only in Drop")
+    }
+}
+
+impl Drop for OwnedRuntime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take()
+            && tokio::runtime::Handle::try_current().is_ok()
+        {
+            runtime.shutdown_background();
+        }
+    }
+}
+
 /// A blocking connection to SQL Server.
 ///
 /// The blocking counterpart to [`tdsql::Client`](crate::Client); every method
 /// mirrors it without `async`/`await`.
 pub struct Client {
-    runtime: Runtime,
+    runtime: OwnedRuntime,
     inner: crate::Client,
 }
 
@@ -81,15 +112,19 @@ impl std::fmt::Debug for Client {
 impl Client {
     /// Connect using this configuration.
     ///
-    /// Fails with [`Error::BlockingInAsync`] if called from inside an async
-    /// runtime.
+    /// Fails with [`Error::BlockingInAsync`] when a Tokio runtime is current
+    /// on this thread, a `spawn_blocking` closure included; see the
+    /// [module docs](self#do-not-call-this-from-async-code).
     pub fn connect(config: &Config) -> Result<Self> {
         if tokio::runtime::Handle::try_current().is_ok() {
             return Err(Error::BlockingInAsync);
         }
         let runtime = build_runtime()?;
         let inner = runtime.block_on(crate::Client::connect(config))?;
-        Ok(Self { runtime, inner })
+        Ok(Self {
+            runtime: OwnedRuntime(Some(runtime)),
+            inner,
+        })
     }
 
     /// Connect using an ADO.NET-style connection string.

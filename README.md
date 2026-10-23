@@ -557,9 +557,13 @@ fn main() -> tdsql::Result<()> {
 ```
 
 Each blocking client runs its own small runtime, so don't use one from async
-code. Starting a runtime inside another one panics. `Client::connect` checks for
-this and returns `Error::BlockingInAsync`, so you find out when you connect, not
-on some later call. In async code, use `tdsql::Client`.
+code. Driving a runtime from a thread that is running another one panics.
+`Client::connect` refuses when a Tokio runtime is current on the calling thread
+and returns `Error::BlockingInAsync`; that includes `spawn_blocking` closures,
+where the client would in fact work, so connect on a thread of your own and move
+it in. The check is made at connect only: a client *used* inside async code
+panics as Tokio does, though dropping one there is fine. In async code, use
+`tdsql::Client`.
 
 ## Type mapping
 
