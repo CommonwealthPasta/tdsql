@@ -44,8 +44,3 @@ tdsql = { path = ".", features = ["blocking"] }
 [[example]]
 name = "blocking"
 required-features = ["blocking"]
-
-# tds-driver from git until 0.1.2 is on crates.io. `[patch]` only applies when
-# tdsql is the root crate, so applications built on tdsql need this section too.
-[patch.crates-io]
-tds-driver = { git = "https://github.com/CommonwealthPasta/tds-driver", rev = "62a93ca3f58beefa57e953d54fe02d69bebb135d" }
