@@ -581,7 +581,9 @@ on some later call. In async code, use `tdsql::Client`.
 | `datetimeoffset` | `DateTimeOffset` | `chrono::DateTime<FixedOffset>`, `DateTime<Utc>`, `DateTime<Local>` |
 | any `NULL` | `Null` | `Option<T>` |
 
-You can also read any column as a `DataValue` and match on it yourself.
+You can also read any column as a `DataValue` and match on it yourself. The
+enum is non-exhaustive, so give the `match` a `_` arm; a variant can then be
+added without a breaking release.
 
 ### Getting at `chrono`, `uuid` and `rust_decimal`
 

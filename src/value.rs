@@ -7,7 +7,12 @@ use uuid::Uuid;
 use crate::error::{Error, Result};
 
 /// A value read from, or bound to, SQL Server.
+///
+/// Non-exhaustive: a `match` outside this crate needs a `_` arm, so that a
+/// variant added for a type this enum does not yet tell apart is not a
+/// breaking change.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub enum DataValue {
     /// `tinyint`
     TinyInt(u8),
