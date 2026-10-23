@@ -924,9 +924,10 @@ impl Client {
     /// Connect using this configuration.
     ///
     /// Gives up after the configuration's connect timeout, 15 seconds unless
-    /// set. A named instance given without a port (`host\INSTANCE`) is found
-    /// through SQL Server Browser, and a redirect to another server, as Azure
-    /// SQL's gateway sends, is followed.
+    /// set. A named instance in a connection string without a port
+    /// (`Server=host\INSTANCE`) is found through SQL Server Browser; the
+    /// builder's [`host`](Config::host) is a plain host name. A redirect to
+    /// another server, as Azure SQL's gateway sends, is followed.
     pub async fn connect(config: &Config) -> Result<Self> {
         let cfg = config.to_driver()?;
         let server = cfg.get_addr();
