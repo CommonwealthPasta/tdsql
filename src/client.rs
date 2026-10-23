@@ -1182,7 +1182,11 @@ impl Client {
         Transaction::begin(self, level).await
     }
 
-    /// Close the connection, sending a graceful logout.
+    /// Close the connection.
+    ///
+    /// The same as dropping the client: the connection task ends and the
+    /// socket is closed. Nothing more is sent to the server, which treats a
+    /// closed socket as the end of the session.
     pub async fn close(self) -> Result<()> {
         // Dropping the last sender ends the task, which closes the driver.
         drop(self);
