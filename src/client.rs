@@ -902,11 +902,13 @@ async fn run_proc_execute(
 /// already running is stopped where it is, even before it has sent anything
 /// back, and the statements after it in the same batch don't run.
 ///
-/// Transaction control -- begin, commit, rollback, savepoints -- always runs,
-/// whatever became of its future. And cancelling stops a statement, not the
-/// transaction around it: work finished before the cancel stays done, as it
-/// would if the statement had failed, so put statements that must stand or
-/// fall together in a [`Transaction`].
+/// Commits and rollbacks always run, whatever became of their futures. And
+/// cancelling stops a statement, not the transaction around it: work finished
+/// before the cancel stays done, as it would if the statement had failed, so
+/// put statements that must stand or fall together in a [`Transaction`]. The
+/// exception is a session with `SET XACT_ABORT ON`, where the server treats a
+/// cancel like any other statement failure and rolls the whole transaction
+/// back.
 pub struct Client {
     tx: mpsc::UnboundedSender<Request>,
     savepoints: AtomicU64,

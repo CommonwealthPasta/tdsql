@@ -218,11 +218,12 @@ A request still waiting its turn behind another never runs. One that's running
 stops where it is, even if it hasn't sent anything back yet because it's still
 sorting, aggregating or waiting on a lock.
 
-Transaction control (begin, commit, rollback, savepoints) always runs, whatever
-became of its future. Cancelling stops a statement, not the transaction around
-it: work that finished before the cancel stays done, just as it would if the
-statement had failed. Put statements that must stand or fall together in a
-transaction.
+Commits and rollbacks always run, whatever became of their futures. Cancelling
+stops a statement, not the transaction around it: work that finished before the
+cancel stays done, just as it would if the statement had failed. Put statements
+that must stand or fall together in a transaction. The exception is a session
+with `SET XACT_ABORT ON`, where the server treats a cancel like any other
+statement failure and rolls the whole transaction back.
 
 ## Named parameters and stored procedures
 
