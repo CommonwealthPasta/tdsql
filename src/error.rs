@@ -205,6 +205,16 @@ pub enum Error {
     /// letter or underscore, at most 32 characters.
     #[error("invalid savepoint name: {0:?}")]
     InvalidSavepointName(String),
+
+    /// The server rolled the transaction back on its own, so the
+    /// [`Transaction`](crate::Transaction) is over.
+    ///
+    /// A deadlock, an error under `SET XACT_ABORT ON`, or a `ROLLBACK` in the
+    /// transaction's own SQL ends it server-side. Statements on the handle
+    /// then fail with this instead of running outside any transaction, and so
+    /// does `commit`. `rollback` succeeds, there being nothing left to undo.
+    #[error("the transaction was rolled back by the server")]
+    TransactionAborted,
 }
 
 impl Error {

@@ -442,3 +442,99 @@ async fn statements_fail_after_close() {
     let client = connect().await;
     client.close().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore]
+async fn a_transaction_the_server_rolled_back_refuses_to_go_on() {
+    let mut client = connect().await;
+    fresh_table(&mut client, "tdsql_tx_aborted").await;
+    client.batch("SET XACT_ABORT ON").await.unwrap();
+    {
+        let mut tx = client.transaction().await.unwrap();
+        tx.execute("INSERT INTO dbo.tdsql_tx_aborted (id) VALUES (1)", &[])
+            .await
+            .unwrap();
+        // A duplicate key under XACT_ABORT rolls the whole transaction back.
+        let err = tx
+            .execute("INSERT INTO dbo.tdsql_tx_aborted (id) VALUES (1)", &[])
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some(2627), "{err}");
+
+        // Regression: these used to run in autocommit and survive the rollback.
+        let err = tx
+            .execute("INSERT INTO dbo.tdsql_tx_aborted (id) VALUES (2)", &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::TransactionAborted), "{err}");
+        let err = tx.query("SELECT 1", &[]).await.unwrap_err();
+        assert!(matches!(err, Error::TransactionAborted), "{err}");
+        let err = tx.batch("SELECT 1").await.unwrap_err();
+        assert!(matches!(err, Error::TransactionAborted), "{err}");
+        let err = tx.transaction().await.unwrap_err();
+        assert!(matches!(err, Error::TransactionAborted), "{err}");
+
+        tx.rollback().await.unwrap();
+    }
+    client.batch("SET XACT_ABORT OFF").await.unwrap();
+    assert_eq!(trancount(&mut client).await, 0);
+    assert!(ids(&mut client, "tdsql_tx_aborted").await.is_empty());
+    drop_table(&mut client, "tdsql_tx_aborted").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_rollback_in_the_transactions_own_sql_ends_it() {
+    let mut client = connect().await;
+    fresh_table(&mut client, "tdsql_tx_self_rollback").await;
+    let err = {
+        let mut tx = client.transaction().await.unwrap();
+        tx.execute(
+            "INSERT INTO dbo.tdsql_tx_self_rollback (id) VALUES (1)",
+            &[],
+        )
+        .await
+        .unwrap();
+        tx.batch("IF @@TRANCOUNT > 0 ROLLBACK").await.unwrap();
+        let err = tx
+            .execute(
+                "INSERT INTO dbo.tdsql_tx_self_rollback (id) VALUES (2)",
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::TransactionAborted), "{err}");
+        tx.commit().await.unwrap_err()
+    };
+    assert!(matches!(err, Error::TransactionAborted), "{err}");
+
+    assert_eq!(trancount(&mut client).await, 0);
+    let n: i32 = client.query_scalar("SELECT 42", &[]).await.unwrap();
+    assert_eq!(n, 42);
+    assert!(ids(&mut client, "tdsql_tx_self_rollback").await.is_empty());
+    drop_table(&mut client, "tdsql_tx_self_rollback").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn dropping_an_aborted_transaction_leaves_the_connection_clean() {
+    let mut client = connect().await;
+    {
+        let mut tx = client
+            .transaction_with_isolation(IsolationLevel::Serializable)
+            .await
+            .unwrap();
+        tx.batch("ROLLBACK").await.unwrap();
+        assert!(matches!(
+            tx.query_scalar::<i32>("SELECT 1", &[]).await,
+            Err(Error::TransactionAborted)
+        ));
+    }
+    // The drop's rollback has nothing to undo, and must not fail the
+    // connection or leave the isolation level behind.
+    assert_eq!(trancount(&mut client).await, 0);
+    assert_eq!(isolation(&mut client).await, READ_COMMITTED);
+    let mut tx = client.transaction().await.unwrap();
+    assert_eq!(trancount(&mut tx).await, 1);
+    tx.commit().await.unwrap();
+}

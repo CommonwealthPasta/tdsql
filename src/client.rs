@@ -397,6 +397,44 @@ impl Request {
             | Request::RollbackTo { .. } => false,
         }
     }
+
+    /// Answer with `err` without sending anything to the server.
+    fn fail(self, err: Error) {
+        match self {
+            Request::Query { reply, .. }
+            | Request::Batch { reply, .. }
+            | Request::ProcQuery { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Request::Execute { reply, .. } | Request::ProcExecute { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Request::QueryStream { header, .. } => {
+                let _ = header.send(Err(err));
+            }
+            Request::Begin { reply, .. }
+            | Request::Commit { reply }
+            | Request::Savepoint { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Request::Rollback { reply } | Request::RollbackTo { reply, .. } => {
+                if let Some(reply) = reply {
+                    let _ = reply.send(Err(err));
+                }
+            }
+        }
+    }
+}
+
+/// The transaction a [`Transaction`] handle holds open on the connection.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TxState {
+    None,
+    Open,
+    /// The server rolled it back on its own -- a deadlock, an error under
+    /// `XACT_ABORT ON`, a `ROLLBACK` in the transaction's SQL -- but the
+    /// handle is still around. Its statements must not run in autocommit.
+    Aborted,
 }
 
 /// How long a cancelled request gets to finish what is left of its response
@@ -505,10 +543,35 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
     // A transaction began at a level other than READ COMMITTED. The level
     // outlives it on the connection (MS-TDS 2.2.6.9).
     let mut level_changed = false;
+    let mut tx = TxState::None;
 
     while let Some(request) = rx.recv().await {
         // Not sent yet, so cancelling it is as simple as not sending it.
         if request.abandoned() {
+            continue;
+        }
+        if tx == TxState::Aborted {
+            match request {
+                // Nothing left to undo, so the rollback the handle asks for,
+                // or its drop enqueues, is done already.
+                Request::Rollback { reply } => {
+                    tx = TxState::None;
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Ok(()));
+                    }
+                    if !restore_isolation(&mut driver, &mut level_changed).await {
+                        return;
+                    }
+                }
+                Request::Commit { reply } => {
+                    tx = TxState::None;
+                    let _ = reply.send(Err(Error::TransactionAborted));
+                    if !restore_isolation(&mut driver, &mut level_changed).await {
+                        return;
+                    }
+                }
+                other => other.fail(Error::TransactionAborted),
+            }
             continue;
         }
         match request {
@@ -614,20 +677,25 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 {
                     level_changed = true;
                 }
-                if reply.send(result).is_err() && began {
+                match reply.send(result) {
+                    Ok(()) if began => tx = TxState::Open,
                     // The caller gave up while the begin was in flight, so no
                     // `Transaction` exists to end it. Left open, it would
                     // swallow every later statement and nest the next
                     // transaction, whose commit would then commit nothing.
-                    if driver.rollback_transaction().await.is_err() {
-                        return;
+                    Err(_) if began => {
+                        if driver.rollback_transaction().await.is_err() {
+                            return;
+                        }
+                        if !restore_isolation(&mut driver, &mut level_changed).await {
+                            return;
+                        }
                     }
-                    if !restore_isolation(&mut driver, &mut level_changed).await {
-                        return;
-                    }
+                    _ => {}
                 }
             }
             Request::Commit { reply } => {
+                tx = TxState::None;
                 let result = driver
                     .commit_transaction()
                     .await
@@ -657,6 +725,7 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                 );
             }
             Request::Rollback { reply } => {
+                tx = TxState::None;
                 let result = driver
                     .rollback_transaction()
                     .await
@@ -689,6 +758,12 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
                     let _ = reply.send(result);
                 }
             }
+        }
+        // The server ends a transaction by itself on a deadlock, on an error
+        // under XACT_ABORT ON, or at a ROLLBACK in the transaction's own SQL,
+        // and says so in the response the driver has just read.
+        if tx == TxState::Open && !driver.in_transaction() {
+            tx = TxState::Aborted;
         }
     }
 
@@ -927,7 +1002,7 @@ async fn run_proc_execute(
 /// put statements that must stand or fall together in a [`Transaction`]. The
 /// exception is a session with `SET XACT_ABORT ON`, where the server treats a
 /// cancel like any other statement failure and rolls the whole transaction
-/// back.
+/// back; the `Transaction` then reports [`Error::TransactionAborted`].
 pub struct Client {
     tx: mpsc::UnboundedSender<Request>,
     savepoints: AtomicU64,

@@ -59,6 +59,12 @@ enum Scope {
 /// to discard it. **Dropping without doing either discards the work** — a
 /// transaction never commits implicitly.
 ///
+/// The server can end a transaction by itself: a deadlock, an error under
+/// `SET XACT_ABORT ON`, a `ROLLBACK` in a procedure. The handle notices, and
+/// from then on every statement fails with [`Error::TransactionAborted`]
+/// rather than running outside any transaction; `commit` fails the same way,
+/// and `rollback` succeeds, there being nothing left to undo.
+///
 /// ```no_run
 /// # use tdsql::Client;
 /// # async fn f(client: &mut Client) -> tdsql::Result<()> {

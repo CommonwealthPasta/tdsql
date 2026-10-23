@@ -291,6 +291,12 @@ tx.commit().await?;   // or tx.rollback().await?
 # }
 ```
 
+Sometimes the server ends a transaction itself: a deadlock, an error with
+`SET XACT_ABORT ON`, or a `ROLLBACK` inside a procedure you called. The handle
+notices. Any further statement on it fails with `Error::TransactionAborted`
+rather than running outside the transaction, `commit()` fails the same way,
+and `rollback()` succeeds, since there is nothing left to undo.
+
 Nothing commits unless you ask it to, so returning early with `?` is safe. Here
 the second insert fails, and the first one is rolled back with it:
 
