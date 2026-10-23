@@ -150,6 +150,45 @@ fn a_typed_null_with_no_parameter_type_binds_untyped() {
 }
 
 #[test]
+fn a_wide_numeric_reads_once_its_trailing_zeros_go() {
+    use rust_decimal::Decimal;
+    use tds_driver::numeric::Numeric;
+
+    // 0.5 in a decimal(38, 30): scale 30 is past Decimal's 28.
+    let half = Numeric::new_with_scale(5 * 10i128.pow(29), 30);
+    assert_eq!(
+        map_column_data(C::Numeric(Some(half)), "c").unwrap(),
+        DataValue::Decimal(Decimal::new(5, 1))
+    );
+    // 0 in a decimal(38, 38).
+    let zero = Numeric::new_with_scale(0, 38);
+    assert_eq!(
+        map_column_data(C::Numeric(Some(zero)), "c").unwrap(),
+        DataValue::Decimal(Decimal::ZERO)
+    );
+    // 1e11 in a decimal(38, 18): 29 digits, one too many until a zero goes.
+    let big = Numeric::new_with_scale(10i128.pow(29), 18);
+    assert_eq!(
+        map_column_data(C::Numeric(Some(big)), "c").unwrap(),
+        DataValue::Decimal(Decimal::new(100_000_000_000, 0))
+    );
+    // 10^30 at scale 0 has no zeros to spare at scale 0, so it still fails.
+    let err = map_column_data(
+        C::Numeric(Some(Numeric::new_with_scale(10i128.pow(30), 0))),
+        "c",
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::Decimal { .. }), "{err}");
+    // 1.000...001 at scale 30 cannot drop its last digit, so it fails too.
+    let err = map_column_data(
+        C::Numeric(Some(Numeric::new_with_scale(10i128.pow(30) + 1, 30))),
+        "c",
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::Decimal { .. }), "{err}");
+}
+
+#[test]
 fn an_untyped_null_binds_as_nvarchar() {
     assert_eq!(tds_driver::ToSql::to_sql(&DataValue::Null), C::String(None));
 }

@@ -653,3 +653,24 @@ async fn connects_from_a_connection_string() {
     let n: i32 = client.query_scalar("SELECT 1", &[]).await.unwrap();
     assert_eq!(n, 1);
 }
+
+#[tokio::test]
+#[ignore]
+async fn wide_decimals_read_when_their_trailing_zeros_make_them_fit() {
+    let mut client = connect().await;
+    let row = client
+        .query_one(
+            "SELECT CAST(100000000000 AS decimal(38, 18)) AS amount, \
+                    CAST(0.5 AS decimal(38, 30)) AS ratio, \
+                    CAST(0 AS decimal(38, 38)) AS frac",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        row.get::<Decimal, _>("amount"),
+        Decimal::new(100_000_000_000, 0)
+    );
+    assert_eq!(row.get::<Decimal, _>("ratio"), Decimal::new(5, 1));
+    assert_eq!(row.get::<Decimal, _>("frac"), Decimal::ZERO);
+}

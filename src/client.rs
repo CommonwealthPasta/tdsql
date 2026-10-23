@@ -134,6 +134,29 @@ impl<'a> tds_driver::IntoSql<'a> for DataValue {
 // Reading: the driver's wire types -> DataValue.
 // ---------------------------------------------------------------------------
 
+/// A server numeric as a `Decimal`.
+///
+/// `Decimal` holds 28 digits at a scale of at most 28, so a wide `decimal(38, 30)`
+/// column can carry a value that fits only once its trailing zeros go: `0.5`
+/// at scale 30 is `5` at scale 1. Those are dropped until it fits, as the
+/// driver and SqlClient do; a value that still does not fit is an error.
+fn to_decimal(n: tds_driver::numeric::Numeric) -> Result<rust_decimal::Decimal> {
+    let (mut value, mut scale) = (n.value(), n.scale() as u32);
+    loop {
+        if let Ok(d) = rust_decimal::Decimal::try_from_i128_with_scale(value, scale) {
+            return Ok(d);
+        }
+        if scale == 0 || value % 10 != 0 {
+            return Err(Error::Decimal {
+                value: n.value(),
+                scale: n.scale(),
+            });
+        }
+        value /= 10;
+        scale -= 1;
+    }
+}
+
 /// Convert one column value, naming `column` in any error.
 ///
 /// This is the crate's single mapping path: every query goes through it, so
@@ -173,12 +196,7 @@ pub(crate) fn map_column_data(cd: tds_driver::ColumnData<'_>, column: &str) -> R
         // A numeric out of `Decimal`'s range used to become NULL silently.
         C::Numeric(v) => match v {
             None => DataValue::Null,
-            Some(n) => rust_decimal::Decimal::try_from_i128_with_scale(n.value(), n.scale() as u32)
-                .map(DataValue::Decimal)
-                .map_err(|_| Error::Decimal {
-                    value: n.value(),
-                    scale: n.scale(),
-                })?,
+            Some(n) => DataValue::Decimal(to_decimal(n)?),
         },
 
         // These used to `.unwrap()`, panicking the caller's task on bad data.

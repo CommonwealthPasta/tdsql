@@ -169,8 +169,10 @@ pub enum Error {
         target: &'static str,
     },
 
-    /// The server sent a numeric the `Decimal` type cannot represent.
-    #[error("invalid decimal from server (value {value}, scale {scale})")]
+    /// The server sent a numeric the `Decimal` type cannot represent: more
+    /// than 28 significant digits, or a scale past 28 that trailing zeros
+    /// cannot absorb.
+    #[error("numeric does not fit a Decimal (value {value}, scale {scale})")]
     Decimal {
         /// The raw mantissa.
         value: i128,
