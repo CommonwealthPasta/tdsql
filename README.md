@@ -622,12 +622,17 @@ directions. They don't store an offset, so treating one as UTC would be a
 guess. Those columns bind from and read as `NaiveDateTime`, and you handle the
 zone yourself: `.naive_utc()` on the way out, `.and_utc()` on the way back in.
 
-### Known limitation: untyped NULLs
+### NULL parameters
 
-Binding `DataValue::Null` or `None` sends an untyped `NULL`, which goes over the
-wire as a `NULL int`. That's true of `None` for any `Option<T>`, because the `T`
-isn't sent. SQL Server converts a `NULL int` for most targets, but a column that
-needs a specific type may reject it.
+A `NULL` parameter still has a type, and SQL Server checks it against the
+column. `None` binds as a `NULL` of its `T`, so `None::<NaiveDate>` goes as a
+`date` and `None::<String>` as an `nvarchar`. To bind a `NULL` of a type you
+choose, use `DataValue::TypedNull`, such as `DataValue::TypedNull(SqlType::Xml)`.
+
+`DataValue::Null` has no type, so it goes as an `nvarchar`, which SQL Server
+converts to every column type except the binary ones. Bind `None::<Vec<u8>>`
+for those. A `None` of your own `ToSql` type is untyped too, unless you
+implement `ToSql::null_type`.
 
 ## Examples
 
