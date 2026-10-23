@@ -467,6 +467,13 @@ impl_from_sql!(f64, "f64", |v| match v {
     _ => None,
 });
 
+// A `real` arrives widened to f64; narrowing it back gives the value written.
+// A `float` column narrows too, as asking for f32 is asking for that.
+impl_from_sql!(f32, "f32", |v| match v {
+    DataValue::Float(n) => Some(*n as f32),
+    _ => None,
+});
+
 impl_from_sql!(bool, "bool", |v| match v {
     DataValue::Bool(b) => Some(*b),
     _ => None,

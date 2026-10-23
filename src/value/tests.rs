@@ -11,6 +11,9 @@ fn reads_each_primitive() {
     assert_eq!(get::<i32>(DataValue::Int(5)).unwrap(), 5i32);
     assert_eq!(get::<i64>(DataValue::BigInt(6)).unwrap(), 6i64);
     assert_eq!(get::<f64>(DataValue::Float(2.5)).unwrap(), 2.5);
+    assert_eq!(get::<f32>(DataValue::Float(2.5)).unwrap(), 2.5f32);
+    // A `real` holding 0.1f32 reads as 0.10000000149011612 through f64.
+    assert_eq!(get::<f32>(DataValue::Float(0.1f32 as f64)).unwrap(), 0.1f32);
     assert!(get::<bool>(DataValue::Bool(true)).unwrap());
     assert_eq!(get::<String>(DataValue::Text("hi".into())).unwrap(), "hi");
     assert_eq!(

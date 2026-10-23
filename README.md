@@ -557,7 +557,7 @@ on some later call. In async code, use `tdsql::Client`.
 | `smallint` | `SmallInt` | `i16`, `i32`, `i64` |
 | `int` | `Int` | `i32`, `i64` |
 | `bigint` | `BigInt` | `i64` |
-| `real`, `float` | `Float` | `f64` |
+| `real`, `float` | `Float` | `f64`, `f32` |
 | `decimal`, `numeric`, `money` | `Decimal` | `rust_decimal::Decimal` |
 | `bit` | `Bool` | `bool` |
 | `char`, `varchar`, `nchar`, `nvarchar`, `text`, `xml` | `Text` | `String` |
