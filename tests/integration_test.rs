@@ -688,3 +688,69 @@ async fn the_application_name_is_tdsql_unless_set() {
     let name: String = named.query_scalar("SELECT APP_NAME()", &[]).await.unwrap();
     assert_eq!(name, "billing");
 }
+
+#[tokio::test]
+#[ignore]
+async fn a_set_option_run_through_execute_sticks() {
+    // Regression: with no parameters, `execute` still went through
+    // `sp_executesql`, which undid any SET option on return.
+    let mut client = connect().await;
+    client.execute("SET LOCK_TIMEOUT 1234", &[]).await.unwrap();
+    let timeout: i32 = client
+        .query_scalar("SELECT @@LOCK_TIMEOUT", &[])
+        .await
+        .unwrap();
+    assert_eq!(timeout, 1234);
+
+    // With a parameter the call is an sp_executesql scope, as SqlClient's is.
+    client
+        .execute("SET LOCK_TIMEOUT 99; SELECT @P1", &[&1])
+        .await
+        .unwrap();
+    let timeout: i32 = client
+        .query_scalar("SELECT @@LOCK_TIMEOUT", &[])
+        .await
+        .unwrap();
+    assert_eq!(timeout, 1234);
+}
+
+#[tokio::test]
+#[ignore]
+async fn begin_and_commit_run_through_execute_report_what_happened() {
+    // Regression: both took effect but were reported as error 266.
+    let mut client = connect().await;
+    ddl(&mut client, "CREATE TABLE #tdsql_exec_tran (id INT)").await;
+    client.execute("BEGIN TRAN", &[]).await.unwrap();
+    let depth: i32 = client
+        .query_scalar("SELECT @@TRANCOUNT", &[])
+        .await
+        .unwrap();
+    assert_eq!(depth, 1);
+    let n = client
+        .execute("INSERT INTO #tdsql_exec_tran (id) VALUES (1)", &[])
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    client.execute("COMMIT", &[]).await.unwrap();
+    let depth: i32 = client
+        .query_scalar("SELECT @@TRANCOUNT", &[])
+        .await
+        .unwrap();
+    assert_eq!(depth, 0);
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_parameterless_query_keeps_its_session_changes() {
+    let mut client = connect().await;
+    let rows = client.query("SET DATEFORMAT dmy", &[]).await.unwrap();
+    assert!(rows.is_empty());
+    let format: String = client
+        .query_scalar(
+            "SELECT date_format FROM sys.dm_exec_sessions WHERE session_id = @@SPID",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(format, "dmy");
+}

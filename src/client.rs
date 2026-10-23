@@ -540,14 +540,16 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
             }
             Request::Execute { sql, params, reply } => {
                 let work = async |driver: &mut Driver| {
-                    let refs = as_driver_refs(&params);
-                    driver
-                        .execute(&sql, &refs)
-                        .await
-                        .map(|r| r.total())
-                        .map_err(|e| {
-                            Error::from(e).with_statement(StatementKind::Query, &sql, params.len())
-                        })
+                    // A plain batch without parameters, as `open_query` sends.
+                    let result = if params.is_empty() {
+                        driver.simple_execute(&sql).await
+                    } else {
+                        let refs = as_driver_refs(&params);
+                        driver.execute(&sql, &refs).await
+                    };
+                    result.map(|r| r.total()).map_err(|e| {
+                        Error::from(e).with_statement(StatementKind::Query, &sql, params.len())
+                    })
                 };
                 if !serve(&mut driver, reply, work).await {
                     return;
@@ -694,9 +696,27 @@ async fn connection_task(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<Req
     let _ = driver.close().await;
 }
 
+/// Send `sql` and return its response stream.
+///
+/// With parameters it goes through `sp_executesql`. Without, it goes as a
+/// plain batch, as SqlClient sends it: `sp_executesql` runs its text in a
+/// scope of its own, so a `SET` option would be undone on return and a
+/// `BEGIN TRAN` reported as error 266 after taking effect.
+async fn open_query<'a>(
+    driver: &'a mut Driver,
+    sql: &str,
+    params: &[DataValue],
+) -> tds_driver::Result<tds_driver::QueryStream<'a>> {
+    if params.is_empty() {
+        driver.simple_query(sql.to_string()).await
+    } else {
+        let refs = as_driver_refs(params);
+        driver.query(sql.to_string(), &refs).await
+    }
+}
+
 async fn run_query(driver: &mut Driver, sql: &str, params: &[DataValue]) -> Result<DataSet> {
-    let refs = as_driver_refs(params);
-    let stream = driver.query(sql, &refs).await?;
+    let stream = open_query(driver, sql, params).await?;
     collect_query_stream(stream).await
 }
 
@@ -730,8 +750,7 @@ async fn stream_query(
     // the connection is clean for the next request.
     let mut failure: Option<Error> = None;
 
-    let refs = as_driver_refs(params);
-    match driver.query(sql, &refs).await {
+    match open_query(driver, sql, params).await {
         Err(e) => failure = Some(e.into()),
         Ok(mut stream) => {
             while let Some(item) = stream.next().await {
@@ -1076,6 +1095,11 @@ impl Client {
     /// affected.
     ///
     /// If the batch holds several statements, the counts are summed.
+    ///
+    /// With no parameters the SQL is sent as a plain batch, so a `SET` option
+    /// or `BEGIN TRAN` takes effect on the session, as it would from `batch`.
+    /// With parameters it goes through `sp_executesql`, whose `SET` options
+    /// last only for that call.
     pub async fn execute(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<u64> {
         let (sql, params) = (sql.to_string(), to_values(params));
         self.call(|reply| Request::Execute { sql, params, reply })
@@ -1084,11 +1108,13 @@ impl Client {
 
     /// Run a SQL batch verbatim, with no parameters, and collect its rows.
     ///
-    /// Parameterised statements are sent as an RPC, and some statements —
-    /// `CREATE PROCEDURE`, `CREATE VIEW`, `CREATE TRIGGER` — must be the first
-    /// statement of their own batch, so they cannot go that route. Use this for
-    /// DDL, and [`execute`](Self::execute) or [`query`](Self::query) for
-    /// everything else.
+    /// The same wire form as [`execute`](Self::execute) or [`query`](Self::query)
+    /// with no parameters, which also go as a plain batch. This one makes the
+    /// absence of parameters explicit, and returns every row whatever result
+    /// set it came from, so it suits DDL and scripts: `CREATE PROCEDURE`,
+    /// `CREATE VIEW` and `CREATE TRIGGER` must be the first statement of their
+    /// batch, which a parameterised call, sent through `sp_executesql`, cannot
+    /// give them.
     ///
     /// Because the SQL is sent verbatim, never interpolate untrusted input into
     /// it; use parameters instead.

@@ -416,10 +416,13 @@ implement it. It isn't dyn-compatible either: write `&mut impl Executor` or
 
 ## DDL and raw batches
 
-Parameterised statements are sent as RPC calls. Some statements, like
-`CREATE PROCEDURE`, `CREATE VIEW` and `CREATE TRIGGER`, have to come first in a
-batch of their own, so they can't be sent that way. `batch` sends SQL exactly as
-you wrote it:
+A statement with parameters is sent through `sp_executesql`, which runs it in a
+scope of its own: a `SET` option it changes is undone when it returns. One with
+no parameters is sent as a plain batch, as SqlClient does, so
+`execute("SET XACT_ABORT ON", &[])` applies to the session. Some statements,
+like `CREATE PROCEDURE`, `CREATE VIEW` and `CREATE TRIGGER`, have to come first
+in a batch of their own, so they can't take parameters at all. `batch` sends SQL
+exactly as you wrote it and returns every row of every result set:
 
 ```rust,no_run
 # use tdsql::Client;
