@@ -58,3 +58,15 @@ pub use rust_decimal;
 /// Its [`Uuid`](uuid::Uuid) is the public API's [`DataValue::Guid`], which is
 /// how SQL Server's `uniqueidentifier` is read and bound.
 pub use uuid;
+
+/// Longer guides, also found in the repository's `docs/` directory.
+///
+/// Their examples are compiled with the rest of the documentation.
+#[cfg(doc)]
+pub mod docs {
+    #[doc = include_str!("../docs/types.md")]
+    pub mod types {}
+
+    #[doc = include_str!("../docs/how-it-works.md")]
+    pub mod how_it_works {}
+}
