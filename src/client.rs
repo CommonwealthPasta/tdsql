@@ -555,10 +555,28 @@ async fn serve<T>(
 ) -> bool {
     match cancellable(driver, reply.closed(), work).await {
         Some(result) => {
+            let (result, lost) = connection_lost(result);
             let _ = reply.send(result);
-            true
+            !lost
         }
         None => false,
+    }
+}
+
+/// What a failure means for the connection: whether it is gone, so the task
+/// should end, and what the caller is told.
+///
+/// Any I/O failure means the connection is gone. The statement that found it
+/// so gets the cause. The driver answers every later one with `NotConnected`,
+/// which becomes [`Error::ConnectionClosed`], the same as a request that finds
+/// the task already ended.
+fn connection_lost<T>(result: Result<T>) -> (Result<T>, bool) {
+    match result {
+        Err(e) if e.io_kind() == Some(std::io::ErrorKind::NotConnected) => {
+            (Err(Error::ConnectionClosed), true)
+        }
+        Err(e) if e.io_kind().is_some() => (Err(e), true),
+        other => (other, false),
     }
 }
 
@@ -665,10 +683,11 @@ async fn connection_task(
                 let work = async |driver: &mut Driver| {
                     stream_query(driver, &sql, &params, legacy_datetime, header, &rows).await
                 };
-                if cancellable(&mut driver, rows.closed(), work)
-                    .await
-                    .is_none()
-                {
+                // `Some(true)`: the stream ended because the connection is gone.
+                if !matches!(
+                    cancellable(&mut driver, rows.closed(), work).await,
+                    Some(false)
+                ) {
                     return;
                 }
             }
@@ -749,6 +768,7 @@ async fn connection_task(
                 {
                     level_changed = true;
                 }
+                let (result, lost) = connection_lost(result);
                 match reply.send(result) {
                     Ok(()) if began => tx = TxState::Open,
                     // The caller gave up while the begin was in flight, so no
@@ -765,6 +785,9 @@ async fn connection_task(
                     }
                     _ => {}
                 }
+                if lost {
+                    return;
+                }
             }
             Request::Commit { reply } => {
                 tx = TxState::None;
@@ -775,8 +798,9 @@ async fn connection_task(
                     .map_err(|e| {
                         e.with_statement(StatementKind::TransactionControl, "COMMIT TRANSACTION", 0)
                     });
+                let (result, lost) = connection_lost(result);
                 let _ = reply.send(result);
-                if !restore_isolation(&mut driver, &mut level_changed).await {
+                if lost || !restore_isolation(&mut driver, &mut level_changed).await {
                     return;
                 }
             }
@@ -791,10 +815,14 @@ async fn connection_task(
                     Ok(stream) => collect_query_stream(stream).await.map(|_| ()),
                     Err(e) => Err(Error::from(e)),
                 };
-                let _ = reply.send(
+                let (result, lost) = connection_lost(
                     result
                         .map_err(|e| e.with_statement(StatementKind::TransactionControl, &sql, 0)),
                 );
+                let _ = reply.send(result);
+                if lost {
+                    return;
+                }
             }
             Request::Rollback { reply } => {
                 tx = TxState::None;
@@ -809,10 +837,11 @@ async fn connection_task(
                             0,
                         )
                     });
+                let (result, lost) = connection_lost(result);
                 if let Some(reply) = reply {
                     let _ = reply.send(result);
                 }
-                if !restore_isolation(&mut driver, &mut level_changed).await {
+                if lost || !restore_isolation(&mut driver, &mut level_changed).await {
                     return;
                 }
             }
@@ -826,8 +855,12 @@ async fn connection_task(
                     Err(e) => Err(Error::from(e)),
                 }
                 .map_err(|e| e.with_statement(StatementKind::TransactionControl, &sql, 0));
+                let (result, lost) = connection_lost(result);
                 if let Some(reply) = reply {
                     let _ = reply.send(result);
+                }
+                if lost {
+                    return;
                 }
             }
         }
@@ -896,7 +929,7 @@ async fn stream_query(
     legacy_datetime: bool,
     header: Reply<Arc<[Column]>>,
     rows: &mpsc::Sender<Result<Streamed>>,
-) {
+) -> bool {
     let mut header = Some(header);
     let mut columns: Arc<[Column]> = Arc::from(Vec::new());
     // False once the first result set is over or the consumer has gone.
@@ -940,10 +973,10 @@ async fn stream_query(
         }
     }
 
-    let last = match failure {
+    let (last, lost) = connection_lost(match failure {
         Some(e) => Err(e.with_statement(StatementKind::Query, sql, params.len())),
         None => Ok(Streamed::End),
-    };
+    });
     match header {
         // Still unsent: the statement failed, or produced no result set.
         Some(header) => match last {
@@ -960,6 +993,7 @@ async fn stream_query(
             let _ = rows.send(last).await;
         }
     }
+    lost
 }
 
 fn build_proc<'a>(

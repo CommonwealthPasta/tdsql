@@ -403,6 +403,9 @@ if let Err(e) = client.execute("INSERT INTO users (id) VALUES (@P1)", &[&7i32]).
     if e.is_deadlock() {
         // Deadlock victim (error 1205): the transaction is gone, retry it.
     }
+    if e.is_connection_lost() {
+        // The connection is gone: open a new one.
+    }
 }
 # }
 ```

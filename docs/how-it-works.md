@@ -21,6 +21,14 @@ SQL's gateway does, `connect` follows it.
 
 A config's `Debug` output hides the password, so it's safe to log.
 
+When the server drops the connection, because an administrator ran `KILL`,
+the network went away, or a severity 20 error closed the session, the
+statement that finds it gone fails with an `Error::Query` whose source is the
+I/O error, naming the statement and the cause. The connection then closes,
+`Client`'s `Debug` output shows `open: false`, and every later statement fails
+with `Error::ConnectionClosed`. `Error::is_connection_lost()` is true for both,
+which is what a pool should check before handing the client out again.
+
 ## Statements and batches
 
 A statement with parameters is sent through `sp_executesql`, which runs it in a

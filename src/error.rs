@@ -184,10 +184,12 @@ pub enum Error {
     #[error("invalid configuration: {0}")]
     Config(String),
 
-    /// The connection task has shut down, so no further statements can run.
+    /// The connection is gone, so no further statements can run.
     ///
-    /// This means the connection was closed, or it failed in a way that ended
-    /// the background task driving it.
+    /// The statement that found it gone got the cause, as an [`Error::Query`]
+    /// with an I/O source; every statement after it gets this. Open a new
+    /// connection. [`is_connection_lost`](Error::is_connection_lost) is true
+    /// for both.
     #[error("connection is closed")]
     ConnectionClosed,
 
@@ -343,6 +345,35 @@ impl Error {
     /// which is the signal to retry the transaction.
     pub fn is_deadlock(&self) -> bool {
         self.code() == Some(1205)
+    }
+
+    /// Whether the connection is gone, so a pool should discard the client
+    /// rather than hand it out again.
+    ///
+    /// True for the statement that found the connection dead, whose error
+    /// carries the I/O cause, and for [`Error::ConnectionClosed`], which every
+    /// later statement gets. A server error such as a deadlock is not this,
+    /// even one that makes the server close the connection afterwards: the
+    /// next statement reports that.
+    pub fn is_connection_lost(&self) -> bool {
+        match self {
+            Error::ConnectionClosed | Error::Io(_) => true,
+            Error::Query { source, .. } => {
+                matches!(**source, tds_driver::error::Error::Io { .. })
+            }
+            _ => false,
+        }
+    }
+
+    /// The I/O error kind behind a driver failure, if that is what it is.
+    pub(crate) fn io_kind(&self) -> Option<std::io::ErrorKind> {
+        match self {
+            Error::Query { source, .. } => match **source {
+                tds_driver::error::Error::Io { kind, .. } => Some(kind),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 }
 
