@@ -48,6 +48,7 @@ impl tds_driver::ToSql for DataValue {
             DataValue::Decimal(v) => v.to_sql(),
             DataValue::Bool(v) => C::Bit(Some(*v)),
             DataValue::Text(v) => C::String(Some(Cow::Borrowed(v.as_str()))),
+            DataValue::VarChar(v) => C::VarChar(Some(Cow::Borrowed(v.as_str()))),
             DataValue::Binary(v) => C::Binary(Some(Cow::Borrowed(v.as_slice()))),
             DataValue::Guid(v) => C::Guid(Some(*v)),
             DataValue::Date(v) => v.to_sql(),
@@ -104,6 +105,7 @@ impl<'a> tds_driver::IntoSql<'a> for DataValue {
         use tds_driver::ColumnData as C;
         match self {
             DataValue::Text(v) => C::String(Some(Cow::Owned(v))),
+            DataValue::VarChar(v) => C::VarChar(Some(Cow::Owned(v))),
             DataValue::Binary(v) => C::Binary(Some(Cow::Owned(v))),
             // Every other variant borrows nothing.
             other => match tds_driver::ToSql::to_sql(&other) {

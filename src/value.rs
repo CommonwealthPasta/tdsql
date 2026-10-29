@@ -30,6 +30,15 @@ pub enum DataValue {
     Bool(bool),
     /// Any character or XML type.
     Text(String),
+    /// A string sent as `varchar`, in the server's collation, where
+    /// [`Text`](DataValue::Text) goes as `nvarchar`.
+    ///
+    /// Against an indexed `varchar` column under a `SQL_*` collation an
+    /// `nvarchar` parameter makes the server convert the column and scan the
+    /// index; a `varchar` parameter seeks. A character the collation's code
+    /// page lacks is an error at bind time. Only sent: a `varchar` column
+    /// still reads as `Text`.
+    VarChar(String),
     /// Any binary type.
     Binary(Vec<u8>),
     /// `uniqueidentifier`
@@ -69,6 +78,7 @@ impl DataValue {
             DataValue::Decimal(_) => "Decimal",
             DataValue::Bool(_) => "Bool",
             DataValue::Text(_) => "Text",
+            DataValue::VarChar(_) => "VarChar",
             DataValue::Binary(_) => "Binary",
             DataValue::Guid(_) => "Guid",
             DataValue::Date(_) => "Date",
@@ -490,7 +500,7 @@ impl_from_sql!(Decimal, "Decimal", |v| match v {
 });
 
 impl_from_sql!(String, "String", |v| match v {
-    DataValue::Text(s) => Some(s.clone()),
+    DataValue::Text(s) | DataValue::VarChar(s) => Some(s.clone()),
     _ => None,
 });
 
@@ -581,13 +591,16 @@ impl_partial_eq!(f64, |s, o| matches!(s, DataValue::Float(v) if v == o));
 impl_partial_eq!(Decimal, |s, o| matches!(s, DataValue::Decimal(v) if v == o));
 impl_partial_eq!(
     str,
-    |s, o| matches!(s, DataValue::Text(v) if v.as_str() == o)
+    |s, o| matches!(s, DataValue::Text(v) | DataValue::VarChar(v) if v.as_str() == o)
 );
 impl_partial_eq!(
     &str,
-    |s, o| matches!(s, DataValue::Text(v) if v.as_str() == *o)
+    |s, o| matches!(s, DataValue::Text(v) | DataValue::VarChar(v) if v.as_str() == *o)
 );
-impl_partial_eq!(String, |s, o| matches!(s, DataValue::Text(v) if v == o));
+impl_partial_eq!(
+    String,
+    |s, o| matches!(s, DataValue::Text(v) | DataValue::VarChar(v) if v == o)
+);
 impl_partial_eq!(Uuid, |s, o| matches!(s, DataValue::Guid(v) if v == o));
 impl_partial_eq!(NaiveDate, |s, o| matches!(s, DataValue::Date(v) if v == o));
 impl_partial_eq!(NaiveTime, |s, o| matches!(s, DataValue::Time(v) if v == o));

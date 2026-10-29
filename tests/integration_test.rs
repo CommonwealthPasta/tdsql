@@ -847,3 +847,54 @@ async fn datetime_parameters_can_be_sent_as_datetime_for_datetime_columns() {
 
     ddl(&mut client, "DROP TABLE dbo.tdsql_dt_legacy").await;
 }
+
+/// The wire type the server saw for a parameter, as `sql_variant` reports it.
+async fn param_type(client: &mut Client, value: &dyn ToSql) -> String {
+    client
+        .query_scalar(
+            "SELECT CAST(SQL_VARIANT_PROPERTY(ISNULL(@P1, ''), 'BaseType') AS nvarchar(30))",
+            &[value],
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore]
+async fn varchar_values_are_sent_as_varchar() {
+    let mut client = connect().await;
+
+    assert_eq!(param_type(&mut client, &"abc").await, "nvarchar");
+    assert_eq!(
+        param_type(&mut client, &DataValue::VarChar("abc".into())).await,
+        "varchar"
+    );
+
+    // Round trip, by position and by name.
+    let name = DataValue::VarChar("Väinämöinen".into());
+    let back: String = client.query_scalar("SELECT @P1", &[&name]).await.unwrap();
+    assert_eq!(back, "Väinämöinen");
+    let cmd = Command::query("SELECT @name AS name").param("name", name);
+    let ds = client.query_dataset(&cmd).await.unwrap();
+    assert_eq!(ds[0][0].get::<String, _>("name"), "Väinämöinen");
+
+    // Over 8000 bytes it goes as varchar(max), whole.
+    let long = DataValue::VarChar("x".repeat(8001));
+    let len: i64 = client
+        .query_scalar("SELECT DATALENGTH(@P1)", &[&long])
+        .await
+        .unwrap();
+    assert_eq!(len, 8001);
+
+    // A character the server's code page lacks is an error before anything
+    // is sent, and the connection is still usable. (The test server's
+    // collation is SQL_Latin1_General_CP1_CI_AS, code page 1252.)
+    let err = client
+        .query_scalar::<String>("SELECT @P1", &[&DataValue::VarChar("日本".into())])
+        .await
+        .unwrap_err();
+    assert!(!err.is_connection_lost(), "{err:?}");
+    assert!(err.to_string().contains("SELECT @P1"), "{err}");
+    let one: i32 = client.query_scalar("SELECT 1", &[]).await.unwrap();
+    assert_eq!(one, 1);
+}

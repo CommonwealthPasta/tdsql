@@ -274,3 +274,14 @@ fn compares_equal_across_zones() {
     assert_ne!(value, utc + chrono::Duration::hours(1));
     assert_ne!(DataValue::Null, utc);
 }
+
+#[test]
+fn varchar_reads_and_compares_as_text() {
+    let v = DataValue::VarChar("abc".into());
+    assert_eq!(v.type_name(), "VarChar");
+    assert_eq!(get::<String>(v.clone()).unwrap(), "abc");
+    assert!(v == "abc");
+    let owned = String::from("abc");
+    assert!(v == owned);
+    assert!(v != "abd");
+}

@@ -129,13 +129,30 @@ implement `ToSql::null_type`.
 
 ## Parameter types and query plans
 
-A string parameter is always `nvarchar`. Compared with an indexed `varchar`
-column under one of the `SQL_*` collations, which is SQL Server's default on
-many installations, that makes the server convert the column rather than the
-parameter, and the index is scanned instead of sought. On 300,000 rows that
-was 20 ms a query instead of 0.4 ms. Cast the parameter in the SQL to get the
-seek back: `WHERE code = CAST(@P1 AS varchar(20))`. Windows collations such as
-`Latin1_General_CI_AS` are not affected.
+A `&str` or `String` parameter is sent as `nvarchar`. Compared with an indexed
+`varchar` column under one of the `SQL_*` collations, which is SQL Server's
+default on many installations, that makes the server convert the column rather
+than the parameter, and the index is scanned instead of sought. On 300,000
+rows that was 20 ms a query instead of 0.4 ms. Bind such a parameter as
+`DataValue::VarChar` and it is sent as `varchar` in the server's collation, so
+the index is sought:
+
+```rust,no_run
+# use tdsql::{Client, DataValue};
+# async fn f(client: &mut Client, code: &str) -> tdsql::Result<()> {
+let rows = client
+    .query(
+        "SELECT id FROM items WHERE code = @P1",
+        &[&DataValue::VarChar(code.into())],
+    )
+    .await?;
+# Ok(())
+# }
+```
+
+A character the server's code page cannot hold is an error at bind time, so
+keep `VarChar` for columns that are `varchar` themselves. Windows collations
+such as `Latin1_General_CI_AS` are not affected.
 
 A `Decimal` parameter is declared as `numeric(38, s)` with the value's own
 scale, so each distinct scale compiles its own plan for the same SQL, and the
