@@ -123,6 +123,7 @@ impl<'a> tds_driver::IntoSql<'a> for DataValue {
                 C::DateTime2(v) => C::DateTime2(v),
                 C::DateTimeOffset(v) => C::DateTimeOffset(v),
                 C::String(v) => C::String(v.map(|s| Cow::Owned(s.into_owned()))),
+                C::VarChar(v) => C::VarChar(v.map(|s| Cow::Owned(s.into_owned()))),
                 C::Binary(v) => C::Binary(v.map(|b| Cow::Owned(b.into_owned()))),
                 C::Xml(v) => C::Xml(v.map(|x| Cow::Owned(x.into_owned()))),
             },
@@ -182,7 +183,7 @@ pub(crate) fn map_column_data(cd: tds_driver::ColumnData<'_>, column: &str) -> R
         C::F32(v) => v.map(|f| DataValue::Float(f as f64)).unwrap_or_default(),
         C::F64(v) => v.map(DataValue::Float).unwrap_or_default(),
         C::Bit(v) => v.map(DataValue::Bool).unwrap_or_default(),
-        C::String(v) => v
+        C::String(v) | C::VarChar(v) => v
             .map(|s| DataValue::Text(s.into_owned()))
             .unwrap_or_default(),
         C::Guid(v) => v.map(DataValue::Guid).unwrap_or_default(),
